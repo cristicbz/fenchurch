@@ -1,0 +1,23 @@
+[package]
+authors = ["Cristi Cobzarenco <cristi.cobzarenco@gmail.com>"]
+name = "fenchurch"
+version = "0.1.0"
+
+[dependencies]
+env_logger = "0.3.4"
+error-chain = "0.5.0"
+glium = "0.15.0"
+log = "0.3.6"
+num = "0.1.35"
+sdl2 = "0.22.0"
+slab = "0.3.0"
+time = "0.1.35"
+
+[dependencies.clap]
+default-features = false
+features = ["color"]
+version = "2.11.3"
+
+[dependencies.glium_sdl2]
+branch = "fenchurch"
+git = "https://github.com/cristicbz/glium-sdl2"
