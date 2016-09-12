@@ -5,7 +5,7 @@ extern crate clap;
 extern crate sdl2;
 extern crate glium_sdl2;
 extern crate time;
-extern crate slab;
+extern crate idcontain;
 
 #[macro_use]
 extern crate glium;

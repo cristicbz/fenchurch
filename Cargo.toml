@@ -10,8 +10,8 @@ glium = "0.15.0"
 log = "0.3.6"
 num = "0.1.35"
 sdl2 = "0.22.0"
-slab = "0.3.0"
 time = "0.1.35"
+idcontain = "0.6"
 
 [dependencies.clap]
 default-features = false

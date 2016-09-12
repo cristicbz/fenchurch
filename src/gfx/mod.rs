@@ -9,7 +9,8 @@ pub use self::input::{Input, Gesture, Analog2d, Scancode, MouseButton};
 pub use self::errors::{SdlError, Error};
 
 use glium::uniforms::{AsUniformValue, UniformValue};
-use math::Mat4;
+use glium::texture::{ClientFormat, PixelValue};
+use math::{Vec2f, Vec3f, Vec4f, Mat4};
 
 
 impl AsUniformValue for Mat4 {
@@ -27,5 +28,29 @@ impl<'a> AsUniformValue for &'a Mat4 {
                             [self[1][0], self[1][1], self[1][2], self[1][3]],
                             [self[2][0], self[2][1], self[2][2], self[2][3]],
                             [self[3][0], self[3][1], self[3][2], self[3][3]]])
+    }
+}
+
+impl<'a> AsUniformValue for &'a Vec3f {
+    fn as_uniform_value(&self) -> UniformValue {
+        UniformValue::Vec3([self[0], self[1], self[2]])
+    }
+}
+
+unsafe impl PixelValue for Vec2f {
+    fn get_format() -> ClientFormat {
+        ClientFormat::F32F32
+    }
+}
+
+unsafe impl PixelValue for Vec3f {
+    fn get_format() -> ClientFormat {
+        ClientFormat::F32F32F32
+    }
+}
+
+unsafe impl PixelValue for Vec4f {
+    fn get_format() -> ClientFormat {
+        ClientFormat::F32F32F32F32
     }
 }
