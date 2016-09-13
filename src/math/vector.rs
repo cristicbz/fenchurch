@@ -1,5 +1,6 @@
 use num::{Float, One, Zero};
-use std::ops::{Add, Div, Index, IndexMut, Mul, Neg, Sub};
+use std::ops::{Add, Div, Index, IndexMut, Mul, Neg, Sub, AddAssign, MulAssign, DivAssign,
+               SubAssign};
 
 pub type Vec2f = Vec2<f32>;
 pub type Vec3f = Vec3<f32>;
@@ -51,17 +52,19 @@ pub trait Vector: Mul<<Self as Vector>::Scalar, Output=Self>
 
 pub trait Field: Mul<Output=Self> + Div<Output=Self>
                + Add<Output=Self> + Sub<Output=Self>
+               + MulAssign + DivAssign + AddAssign + SubAssign
                + Zero + One + Copy + Clone + PartialEq + PartialOrd {}
 
 impl<S> Field for S
     where S: Mul<Output=S> + Div<Output=S>
            + Add<Output=S> + Sub<Output=S>
+           + MulAssign + DivAssign + AddAssign + SubAssign
            + Zero + One + Copy + PartialEq + PartialOrd {}
 
 
 // Vec2
 #[repr(C)]
-#[derive(Copy, Clone, PartialEq, PartialOrd, Debug)]
+#[derive(Copy, Clone, PartialEq, PartialOrd, Debug, Default)]
 pub struct Vec2<Scalar: Field>([Scalar; 2]);
 
 impl<Scalar: Field> Vec2<Scalar> {
@@ -152,6 +155,14 @@ impl<Scalar: Field> Add<Vec2<Scalar>> for Vec2<Scalar> {
     }
 }
 
+impl<Scalar: Field> AddAssign<Vec2<Scalar>> for Vec2<Scalar> {
+    #[inline]
+    fn add_assign(&mut self, rhs: Vec2<Scalar>) {
+        self[0] += rhs[0];
+        self[1] += rhs[1];
+    }
+}
+
 impl<Scalar: Field> Sub<Vec2<Scalar>> for Vec2<Scalar> {
     type Output = Self;
 
@@ -180,7 +191,7 @@ impl<Scalar: Field> IndexMut<usize> for Vec2<Scalar> {
 
 // Vec3
 #[repr(C)]
-#[derive(Copy, Clone, PartialEq, PartialOrd, Debug)]
+#[derive(Copy, Clone, PartialEq, PartialOrd, Debug, Default)]
 pub struct Vec3<Scalar: Field>([Scalar; 3]);
 
 impl<Scalar: Field> Vec3<Scalar> {
@@ -259,6 +270,24 @@ impl<Scalar: Field> Add<Vec3<Scalar>> for Vec3<Scalar> {
     }
 }
 
+impl<Scalar: Field> AddAssign for Vec3<Scalar> {
+    #[inline]
+    fn add_assign(&mut self, rhs: Vec3<Scalar>) {
+        self[0] += rhs[0];
+        self[1] += rhs[1];
+        self[2] += rhs[2];
+    }
+}
+
+impl<Scalar: Field> SubAssign for Vec3<Scalar> {
+    #[inline]
+    fn sub_assign(&mut self, rhs: Vec3<Scalar>) {
+        self[0] -= rhs[0];
+        self[1] -= rhs[1];
+        self[2] -= rhs[2];
+    }
+}
+
 impl<Scalar: Field> Sub<Vec3<Scalar>> for Vec3<Scalar> {
     type Output = Self;
 
@@ -287,7 +316,7 @@ impl<Scalar: Field> IndexMut<usize> for Vec3<Scalar> {
 
 // Vec4
 #[repr(C)]
-#[derive(Copy, Clone, PartialEq, PartialOrd, Debug)]
+#[derive(Copy, Clone, PartialEq, PartialOrd, Debug, Default)]
 pub struct Vec4<Scalar: Field>([Scalar; 4]);
 
 impl<Scalar: Field> Vec4<Scalar> {

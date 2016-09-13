@@ -1,10 +1,11 @@
 use gfx::{Window, WindowOptions, Camera, Input, Gesture, Scancode};
-use math::Vec3f;
+use math::{Vec3f, Vector};
 use super::controller::{Controller, ControllerBindings};
 use super::errors::{Result, ChainErr};
 use super::frame_timers::{FrameTimers, FrameTimerId};
-use num::Zero;
 use super::sphere_renderer::{SphereRenderer, SphereList};
+use super::simulation::{Simulation, NewEntity};
+use rand::{self, Rng};
 
 pub struct App {
     window: Window,
@@ -13,8 +14,14 @@ pub struct App {
     camera: Camera,
     controller: Controller,
     timers: FrameTimers,
+
+    simulation: Simulation,
+
     frame_timer: FrameTimerId,
     cpu_timer: FrameTimerId,
+    render_timer: FrameTimerId,
+    ctrl_timer: FrameTimerId,
+    sim_timer: FrameTimerId,
 }
 
 impl App {
@@ -30,12 +37,9 @@ impl App {
         let renderer = try!(SphereRenderer::new(&window, Default::default())
             .chain_err(|| "Failed to create renderer."));
         let input = try!(Input::new(&window).chain_err(|| "Failed to create input."));
-        let mut camera = Camera::new(75.0, window.aspect_ratio(), 0.1, 1000.0);
+        let mut camera = Camera::new(75.0, window.aspect_ratio(), 0.1, 100.0);
         let mut timers = FrameTimers::new();
         camera.set_position(Vec3f::new(0.0, 0.0, 5.0));
-
-        let frame_timer = timers.new_stopped("frame");
-        let cpu_timer = timers.new_stopped("cpu");
 
         Ok(App {
             window: window,
@@ -43,9 +47,15 @@ impl App {
             input: input,
             camera: camera,
             controller: Controller::new(ControllerBindings::default()),
+
+            frame_timer: timers.new_stopped("frame"),
+            cpu_timer: timers.new_stopped("cpu"),
+            render_timer: timers.new_stopped("render"),
+            sim_timer: timers.new_stopped("sim"),
+            ctrl_timer: timers.new_stopped("ctrl"),
             timers: timers,
-            frame_timer: frame_timer,
-            cpu_timer: cpu_timer,
+
+            simulation: Simulation::with_capacity(256),
         })
     }
 
@@ -53,14 +63,26 @@ impl App {
         let quit_gesture = Gesture::AnyOf(vec![Gesture::QuitTrigger,
                                                Gesture::KeyTrigger(Scancode::Escape)]);
 
-        let num_spheres = 20000;
-        let mut positions = vec![Vec3f::zero(); num_spheres];
-        let mut radii = vec![0.0f32; num_spheres];
-        let mut colours = vec![Vec3f::zero(); num_spheres];
+        let num_spheres = 1000;
+        let mut rng = rand::thread_rng();
+        for _ in 0..num_spheres {
+            let position = Vec3f::new((rng.gen::<f32>() - 0.5) * 30.0,
+                                      (rng.gen::<f32>() - 0.5) * 2.0,
+                                      (rng.gen::<f32>() - 0.5) * 30.0);
+            let distance = position.norm();
+            let velocity = Vec3f::new(-position[2], (rng.gen::<f32>() - 0.5) * 1., position[0]) /
+                           distance.sqrt() * 1.5;
+            self.simulation.add(NewEntity {
+                position: position,
+                velocity: velocity,
+                mass: 1.0,
+                radius: 0.1,
+                colour: Vec3f::new(1.0, 1.0, 1.0),
+            });
+        }
 
         info!("Entering main loop...");
         let mut running = true;
-        let mut time = 100.0;
         while running {
             let mut frame = self.window.draw();
             let frame_result = (|| -> Result<()> {
@@ -68,40 +90,30 @@ impl App {
                 self.timers.start(self.cpu_timer);
                 self.input.update();
 
-                time += delta_time;
-                for (i_sphere, (position, (radius, colour))) in positions.iter_mut()
-                    .zip(radii.iter_mut().zip(colours.iter_mut()))
-                    .enumerate() {
-                    let phase = i_sphere as f32 * 0.01 + time;
-                    let frequency = ((i_sphere as f32 * 0.01).sin() + 2.0).ln() *
-                                    ((time * 0.5).sin() * 0.1 + 1.0);
-                    let base = (phase * frequency).sin();
-
-                    let pos_angle = i_sphere as f32 * 0.01;
-                    let distance = pos_angle.powf(0.9) + 0.01;
-                    *position = Vec3f::new((pos_angle + phase / distance).sin() * distance,
-                                           base * 5.0 * frequency,
-                                           (pos_angle + phase / distance).cos() * distance);
-                    *radius = (base + 2.0) / 2.0 * 0.5;
-                    *colour = Vec3f::new((phase * frequency * 0.5).sin() * 0.5 + 0.5,
-                                         ((phase + 0.1) * frequency * 1.1).sin() * 0.5 + 0.5,
-                                         ((phase + 0.2) * frequency * 0.9).sin() * 0.5 + 0.5);
-                }
-
+                self.timers.start(self.render_timer);
                 try!(self.renderer
                     .render(&self.window,
                             &self.camera,
                             &mut frame,
                             SphereList {
-                                positions: &positions,
-                                radii: &radii,
-                                colours: &colours,
+                                positions: self.simulation.positions(),
+                                radii: self.simulation.radii(),
+                                colours: self.simulation.colours(),
                             })
                     .chain_err(|| "Failed to render frame."));
+                self.timers.stop(self.render_timer);
+
+                self.timers.start(self.ctrl_timer);
                 if self.input.poll_gesture(&quit_gesture) {
                     running = false;
                 }
                 self.controller.update(delta_time, &mut self.input, &mut self.camera);
+                self.timers.stop(self.ctrl_timer);
+
+                self.timers.start(self.sim_timer);
+                self.simulation.update(delta_time);
+                self.timers.stop(self.sim_timer);
+
                 self.timers.stop(self.cpu_timer);
                 Ok(())
             })();

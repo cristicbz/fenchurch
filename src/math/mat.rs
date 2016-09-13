@@ -1,6 +1,6 @@
 use std::fmt;
 use std::ops::{Add, Index, IndexMut, Mul, Sub};
-use super::vector::Vec3f;
+use super::vector::{Vec3f, Vec4f};
 
 /// The type of matrix elements.
 pub type Scalar = f32;
@@ -102,6 +102,23 @@ impl Mat4 {
                   m[4], m[5], m[6], m[7],
                   m[8], m[9], m[10], m[11],
                   m[12], m[13], m[14], m[15])
+    }
+
+    pub fn transform(&self, vector: &Vec4f) -> Vec4f {
+        let m = &self.data;
+        let v = vector;
+        Vec4f::new(m[0] * v[0] + m[4] * v[1] + m[8] * v[2] + m[12] * v[3],
+                   m[1] * v[0] + m[5] * v[1] + m[9] * v[2] + m[13] * v[3],
+                   m[2] * v[0] + m[6] * v[1] + m[10] * v[2] + m[14] * v[3],
+                   m[3] * v[0] + m[7] * v[1] + m[11] * v[2] + m[15] * v[3])
+    }
+
+    pub fn transform_direction(&self, vector: &Vec3f) -> Vec4f {
+        self.transform(&Vec4f::new(vector[0], vector[1], vector[2], 0.0))
+    }
+
+    pub fn transform_position(&self, vector: &Vec3f) -> Vec4f {
+        self.transform(&Vec4f::new(vector[0], vector[1], vector[2], 1.0))
     }
 
     pub fn get(&self, row: usize, column: usize) -> Scalar {

@@ -22,24 +22,43 @@ pub struct SphereRenderer {
     settings: Settings,
 }
 
+pub struct Light {
+    direction: Vec3f,
+    colour: Vec3f,
+}
+
 pub struct Settings {
-    pub light_direction: Vec3f,
+    pub key_light: Light,
+    pub fill_light: Light,
+    pub back_light: Light,
+    pub ambient: Vec3f,
     pub chunk_size: usize,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            light_direction: Vec3f::new(0.577f32, 0.577f32, 0.577f32),
+            key_light: Light {
+                direction: Vec3f::new(0.0, 1.0, 1.0),
+                colour: Vec3f::new(1.0, 1.0, 1.0) * 1.0,
+            },
+            fill_light: Light {
+                direction: Vec3f::new(1.0, 1.0, 0.0),
+                colour: Vec3f::new(1.0, 0.8, 0.7) * 0.4,
+            },
+            back_light: Light {
+                direction: Vec3f::new(-1.0, -1.0, 0.0),
+                colour: Vec3f::new(0.7, 0.8, 1.0) * 0.1,
+            },
+            ambient: Vec3f::new(0.2, 1.0, 1.0) * 0.05,
             chunk_size: 1024,
         }
     }
 }
 
 impl SphereRenderer {
-    pub fn new(window: &Window, mut settings: Settings) -> Result<Self> {
+    pub fn new(window: &Window, settings: Settings) -> Result<Self> {
         assert!(settings.chunk_size > 1);
-        settings.light_direction.normalize();
 
         let program = try!(Program::new(window.facade(),
                                         ProgramCreationInput::SourceCode {
@@ -94,7 +113,7 @@ impl SphereRenderer {
 
         assert!(positions.len() <= u32::MAX as usize);
 
-        let Settings { light_direction, chunk_size } = self.settings;
+        let chunk_size = self.settings.chunk_size;
         let chunks = positions.chunks(chunk_size)
             .zip(radii.chunks(chunk_size))
             .zip(colours.chunks(chunk_size))
@@ -108,6 +127,14 @@ impl SphereRenderer {
 
         let modelview = camera.modelview();
         let projection = camera.projection();
+
+        let key_light_direction =
+            modelview.transform_direction(&self.settings.key_light.direction).xyz().normalized();
+        let fill_light_direction =
+            modelview.transform_direction(&self.settings.fill_light.direction).xyz().normalized();
+        let back_light_direction =
+            modelview.transform_direction(&self.settings.back_light.direction).xyz().normalized();
+
         for chunk in chunks {
             let positions = try!(Texture1d::with_format(window.facade(),
                                                         chunk.positions,
@@ -128,7 +155,13 @@ impl SphereRenderer {
             let uniforms = uniform! {
                 u_modelview: &modelview,
                 u_projection: projection,
-                u_light_direction: &light_direction,
+                u_key_light_direction: &key_light_direction,
+                u_key_light_colour: &self.settings.key_light.colour,
+                u_fill_light_direction: &fill_light_direction,
+                u_fill_light_colour: &self.settings.fill_light.colour,
+                u_back_light_direction: &back_light_direction,
+                u_back_light_colour: &self.settings.back_light.colour,
+                u_ambient_colour: &self.settings.ambient,
                 u_positions: positions.sampled()
                                       .magnify_filter(MagnifySamplerFilter::Nearest)
                                       .minify_filter(MinifySamplerFilter::Nearest)
