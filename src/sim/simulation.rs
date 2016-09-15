@@ -1,17 +1,27 @@
 use idcontain::{IdVec, Id};
-use math::{Vec3f, Vector};
+use math::{Vec3f, Vector, Vec4f};
 use num::Zero;
+use std::f32::consts;
+use std::collections::BinaryHeap;
+use super::bvh::{Bvh, Aabb};
+use super::frame_timers::{FrameTimers, FrameTimerId};
 
-use std::cmp;
-
-const GRAVITY: f32 = 1.0;
-const COMPRESS: f32 = 5.0;
+const DRAG_COEFFICIENT: f32 = 1.0;
+const COMPRESS: f32 = 5000.0;
+const EXPLODE: f32 = 5000.0;
+const GRAVITY: f32 = 20.0;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct EntityId(Id<ComponentIndexes>);
 
 pub struct Simulation {
     entities: IdVec<ComponentIndexes>,
+
+    bvh_timer: FrameTimerId,
+    forces_timer: FrameTimerId,
+
+    bvh: Bvh,
+    intersection_stack: Vec<usize>,
 
     timestep: f32,
     colours: Vec<Vec3f>,
@@ -21,6 +31,8 @@ pub struct Simulation {
     radii: Vec<f32>,
     reverse_lookup: Vec<EntityId>,
     velocities: Vec<Vec3f>,
+
+    explode: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -38,10 +50,15 @@ struct ComponentIndexes {
 
 
 impl Simulation {
-    pub fn with_capacity(capacity: u32) -> Self {
+    pub fn with_capacity(frame_timers: &mut FrameTimers, capacity: u32) -> Self {
         let capacity = capacity as usize;
         Simulation {
             entities: IdVec::with_capacity(capacity),
+            bvh: Bvh::new(),
+            intersection_stack: Vec::new(),
+
+            bvh_timer: frame_timers.new_stopped("sim.bvh"),
+            forces_timer: frame_timers.new_stopped("sim.frc"),
 
             timestep: 1. / 300.,
 
@@ -52,11 +69,13 @@ impl Simulation {
             radii: Vec::with_capacity(capacity),
             reverse_lookup: Vec::with_capacity(capacity),
             velocities: Vec::with_capacity(capacity),
+
+            explode: false,
         }
     }
 
     pub fn add(&mut self, entity: NewEntity) -> EntityId {
-        let base_index = self.positions.len() as u32;
+        let base_index = self.len() as u32;
         let id = EntityId(self.entities.insert(ComponentIndexes { base: base_index }));
 
         self.colours.push(entity.colour);
@@ -71,7 +90,7 @@ impl Simulation {
 
     pub fn remove(&mut self, id: EntityId) -> bool {
         if let Some(ComponentIndexes { base: u32_index }) = self.entities.remove(id.0) {
-            let swap_index = self.positions.len() - 1;
+            let swap_index = self.len() - 1;
             let index = u32_index as usize;
             if swap_index == index {
                 self.colours.pop();
@@ -110,101 +129,120 @@ impl Simulation {
         &self.radii
     }
 
-    pub fn update(&mut self, _delta_time: f32) {
-        self.start_step();
+    pub fn explode(&mut self) {
+        self.explode = true;
+    }
+
+    pub fn update(&mut self, timers: &mut FrameTimers, _delta_time: f32) {
+        self.velocities_halfstep();
+        self.update_positions();
+        self.remove_outliers();
+        timers.start(self.bvh_timer);
+        self.update_bvh();
+        timers.stop(self.bvh_timer);
+        self.zero_forces();
+        timers.start(self.forces_timer);
+        self.compute_forces();
+        timers.stop(self.forces_timer);
+        self.velocities_halfstep();
+
+        self.explode = false;
+    }
+
+    pub fn update_bvh(&mut self) {
+        self.bvh
+            .rebuild(self.positions
+                .iter()
+                .zip(self.radii.iter())
+                .map(|(p, &r)| Aabb::of_sphere(p, r)));
+    }
+
+    pub fn len(&self) -> usize {
+        self.entities.len()
+    }
+
+    fn zero_forces(&mut self) {
         self.forces.clear();
         self.forces.resize(self.positions.len(), Vec3f::zero());
-        self.compute_forces();
-        self.end_step();
-        self.trim_and_recentre();
     }
 
     fn compute_forces(&mut self) {
+        let len = self.len();
+        let forces = &mut self.forces[..];
         let positions = &self.positions[..];
         let velocities = &self.velocities[..];
-        let masses = &self.masses[..];
         let radii = &self.radii[..];
-        let mut forces = &mut self.forces[..];
+        let intersection_stack = &mut self.intersection_stack;
+        let bvh = &self.bvh;
 
-        assert!(positions.len() == velocities.len());
-        assert!(positions.len() == forces.len());
-        assert!(positions.len() == masses.len());
+        let planes = [Vec4f::new(1.0, 0.0, 0.0, 20.0),
+                      Vec4f::new(-1.0, 0.0, 0.0, 20.0),
+                      Vec4f::new(0.0, 0.0, 1.0, 20.0),
+                      Vec4f::new(0.0, 0.0, -1.0, 20.0),
+                      Vec4f::new(0.0, 1.0, 0.0, 0.0)];
 
-        for i in 0..positions.len() {
-            for j in (i + 1)..positions.len() {
-                let diff = positions[j] - positions[i];
-                let squared_norm = diff.squared_norm();
-                let distance = squared_norm.sqrt();
-                let magnitude = GRAVITY / (squared_norm * distance);
+        assert!(forces.len() == len);
+        assert!(positions.len() == len);
+        assert!(velocities.len() == len);
+        assert!(radii.len() == len);
 
-                let surface_distance = distance - radii[i] - radii[j];
-                if surface_distance < 0.03 {
-                    let diff = diff.normalized();
-                    let relative = velocities[j] - velocities[i];
-                    let dot = diff.dot(&relative);
-                    let normal = diff * if dot < 0.0 { dot } else { 0.0 };
-                    let tangent = relative - normal;
-                    let tangent_speed = tangent.norm();
+        let mut avg_n = 0.0;
+        for i_body in 0..len {
+            let position = positions[i_body];
+            let velocity = velocities[i_body];
+            let speed = velocities[i_body].norm();
+            let drag = speed * consts::PI * radii[i_body] * radii[i_body] * DRAG_COEFFICIENT;
+            forces[i_body] -= velocity * drag;
+            forces[i_body] += Vec3f::new(0.0, -GRAVITY, 0.0);
 
-                    let force = normal * 0.9 / (2.0 * 0.5 * self.timestep);
-                    forces[i] += force;
-                    forces[j] -= force;
+            for plane in &planes {
+                let plane_distance = plane.xyz().dot(&positions[i_body]) + plane[3];
+                let distance_difference = plane_distance - radii[i_body];
+                if distance_difference < 0.0 {
+                    forces[i_body] += plane.xyz() * (-distance_difference * COMPRESS);
+                }
+            }
 
-                    if tangent_speed > 1e-3 {
-                        let tangent = tangent / tangent_speed;
-                        let force = tangent * tangent_speed * 0.01;
-                        forces[i] -= force;
-                        forces[j] += force;
+            if self.explode {
+                let direction = position - Vec3f::new(0.0, 0.0, 0.0);
+                let distance_squared = direction.squared_norm();
+                forces[i_body] += direction * EXPLODE /
+                                  (distance_squared * distance_squared.sqrt());
+            }
+
+            for j_body in
+                bvh.intersect_sphere(intersection_stack, positions[i_body], radii[i_body]) {
+                if j_body == i_body {
+                    continue;
+                }
+                avg_n += 1.0;
+                let direction = positions[i_body] - positions[j_body];
+                let min_distance = radii[i_body] + radii[j_body];
+                let squared_distance = direction.squared_norm();
+                if squared_distance <= 1e-8 {
+                    continue;
+                }
+
+                if squared_distance < min_distance * min_distance {
+                    let distance = squared_distance.sqrt() + 1e-8;
+                    let correction = (min_distance / distance - 1.0) * COMPRESS * 0.5;
+
+                    let relative = velocities[i_body] - velocities[j_body];
+                    let normal_dot = relative.dot(&direction) / distance;
+                    if normal_dot < 0.0 {
+                        let normal_dot = normal_dot.max(-0.4 / self.timestep);
+                        forces[i_body] += relative * normal_dot * 1.0;
+                        forces[j_body] -= relative * normal_dot * 1.0;
                     }
 
-                    let force = diff * (COMPRESS * surface_distance);
-                    forces[i] += force;
-                    forces[j] -= force;
-                } else {
-                    forces[i] += diff * (magnitude * masses[j]);
-                    forces[j] -= diff * (magnitude * masses[i]);
+                    forces[i_body] += direction * correction;
+                    forces[j_body] -= direction * correction;
                 }
             }
         }
     }
 
-
-    fn start_step(&mut self) {
-        let mut positions = &mut self.positions[..];
-        let mut velocities = &mut self.velocities[..];
-        let mut forces = &mut self.forces[..];
-        let mut masses = &mut self.masses[..];
-
-        assert!(positions.len() == velocities.len());
-        assert!(positions.len() == forces.len());
-        assert!(positions.len() == masses.len());
-
-        let timestep = self.timestep;
-        let half_timestep = timestep * 0.5;
-
-        let update = |position: &mut Vec3f, velocity: &mut Vec3f, force: Vec3f, mass: f32| {
-            *velocity += force * (half_timestep / mass);
-            *position += *velocity * timestep;
-        };
-
-        while positions.len() > 4 {
-            update(&mut positions[0], &mut velocities[0], forces[0], masses[0]);
-            update(&mut positions[1], &mut velocities[1], forces[1], masses[1]);
-            update(&mut positions[2], &mut velocities[2], forces[2], masses[2]);
-            update(&mut positions[3], &mut velocities[3], forces[3], masses[3]);
-
-            positions = &mut deborrow(positions)[4..];
-            velocities = &mut deborrow(velocities)[4..];
-            forces = &mut deborrow(forces)[4..];
-            masses = &mut deborrow(masses)[4..];
-        }
-
-        for i in 0..positions.len() {
-            update(&mut positions[i], &mut velocities[i], forces[i], masses[i]);
-        }
-    }
-
-    fn end_step(&mut self) {
+    fn velocities_halfstep(&mut self) {
         let mut velocities = &mut self.velocities[..];
         let mut forces = &mut self.forces[..];
         let mut masses = &mut self.masses[..];
@@ -213,7 +251,6 @@ impl Simulation {
         assert!(velocities.len() == masses.len());
 
         let half_timestep = self.timestep * 0.5;
-
         let update = |velocity: &mut Vec3f, force: Vec3f, mass: f32| {
             *velocity += force * (half_timestep / mass);
         };
@@ -234,7 +271,33 @@ impl Simulation {
         }
     }
 
-    fn trim_and_recentre(&mut self) {
+    fn update_positions(&mut self) {
+        let mut positions = &mut self.positions[..];
+        let mut velocities = &mut self.velocities[..];
+
+        assert!(positions.len() == velocities.len());
+        let timestep = self.timestep;
+        let update = |position: &mut Vec3f, velocity: &mut Vec3f| {
+            *position += *velocity * timestep;
+        };
+
+        while positions.len() > 4 {
+            update(&mut positions[0], &mut velocities[0]);
+            update(&mut positions[1], &mut velocities[1]);
+            update(&mut positions[2], &mut velocities[2]);
+            update(&mut positions[3], &mut velocities[3]);
+
+            positions = &mut deborrow(positions)[4..];
+            velocities = &mut deborrow(velocities)[4..];
+        }
+
+        for i in 0..positions.len() {
+            update(&mut positions[i], &mut velocities[i]);
+        }
+
+    }
+
+    fn remove_outliers(&mut self) {
         let mut removals = Vec::new();
         for (i_position, position) in self.positions.iter_mut().enumerate() {
             if position.squared_norm() > 300.0 * 300.0 {
@@ -246,29 +309,43 @@ impl Simulation {
             self.remove(removal);
             info!("Remove entity {:?}", removal);
         }
-
-        let position_mean: Vec3f = self.positions
-            .iter()
-            .fold((1.0, Vec3f::zero()),
-                  |(n, mean), &v| (n + 1.0, mean + (v - mean) / n))
-            .1;
-        let velocity_mean: Vec3f = self.velocities
-            .iter()
-            .fold((1.0, Vec3f::zero()),
-                  |(n, mean), &v| (n + 1.0, mean + (v - mean) / n))
-            .1;
-
-        for position in self.positions.iter_mut() {
-            *position -= position_mean;
-        }
-
-        for velocity in self.positions.iter_mut() {
-            *velocity -= velocity_mean;
-        }
-
     }
 }
 
 fn deborrow<T>(value: T) -> T {
     value
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct Collision {
+    time: f32,
+    index: usize,
+    kind: CollisionKind,
+}
+use std::cmp::Ordering;
+
+impl PartialEq for Collision {
+    fn eq(&self, other: &Collision) -> bool {
+        self.time == other.time
+    }
+}
+
+impl Eq for Collision {}
+
+impl PartialOrd for Collision {
+    fn partial_cmp(&self, other: &Collision) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Collision {
+    fn cmp(&self, other: &Collision) -> Ordering {
+        (-self.time).partial_cmp(&-other.time).expect("nan collision time")
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum CollisionKind {
+    Sphere { other_index: usize },
+    Wall { plane: Vec4f },
 }

@@ -7,7 +7,7 @@ dependencies = [
  "error-chain 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "glium 0.15.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "glium_sdl2 0.13.0 (git+https://github.com/cristicbz/glium-sdl2?branch=fenchurch)",
- "idcontain 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "idcontain 0.6.0",
  "log 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "num 0.1.35 (registry+https://github.com/rust-lang/crates.io-index)",
  "rand 0.3.14 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -292,7 +292,6 @@ dependencies = [
 [[package]]
 name = "idcontain"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "rand 0.3.14 (registry+https://github.com/rust-lang/crates.io-index)",
  "skeptic 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",

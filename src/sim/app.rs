@@ -20,7 +20,6 @@ pub struct App {
     frame_timer: FrameTimerId,
     cpu_timer: FrameTimerId,
     render_timer: FrameTimerId,
-    ctrl_timer: FrameTimerId,
     sim_timer: FrameTimerId,
 }
 
@@ -41,6 +40,8 @@ impl App {
         let mut timers = FrameTimers::new();
         camera.set_position(Vec3f::new(0.0, 0.0, 5.0));
 
+        let simulation = Simulation::with_capacity(&mut timers, 16384);
+
         Ok(App {
             window: window,
             renderer: renderer,
@@ -52,26 +53,26 @@ impl App {
             cpu_timer: timers.new_stopped("cpu"),
             render_timer: timers.new_stopped("render"),
             sim_timer: timers.new_stopped("sim"),
-            ctrl_timer: timers.new_stopped("ctrl"),
             timers: timers,
 
-            simulation: Simulation::with_capacity(256),
+            simulation: simulation,
         })
     }
 
     pub fn run(mut self) -> Result<()> {
         let quit_gesture = Gesture::AnyOf(vec![Gesture::QuitTrigger,
                                                Gesture::KeyTrigger(Scancode::Escape)]);
+        let explode_gesture = Gesture::KeyHold(Scancode::E);
 
-        let num_spheres = 1000;
-        let mut rng = rand::thread_rng();
+        let num_spheres = 20000;
+        let mut rng = rand::ChaChaRng::new_unseeded();
         for _ in 0..num_spheres {
-            let position = Vec3f::new((rng.gen::<f32>() - 0.5) * 30.0,
-                                      (rng.gen::<f32>() - 0.5) * 2.0,
-                                      (rng.gen::<f32>() - 0.5) * 30.0);
-            let distance = position.norm();
-            let velocity = Vec3f::new(-position[2], (rng.gen::<f32>() - 0.5) * 1., position[0]) /
-                           distance.sqrt() * 1.5;
+            let position = Vec3f::new((rng.gen::<f32>() - 0.5) * 2.0 * 10.0,
+                                      (rng.gen::<f32>() - 0.5) * 2.0 * 10.0 + 10.0,
+                                      (rng.gen::<f32>() - 0.5) * 2.0 * 10.0);
+            let velocity = Vec3f::new((rng.gen::<f32>() - 0.5) * 10.,
+                                      (rng.gen::<f32>() - 0.5) * 10.,
+                                      (rng.gen::<f32>() - 0.5) * 10. + 10.0);
             self.simulation.add(NewEntity {
                 position: position,
                 velocity: velocity,
@@ -103,15 +104,16 @@ impl App {
                     .chain_err(|| "Failed to render frame."));
                 self.timers.stop(self.render_timer);
 
-                self.timers.start(self.ctrl_timer);
                 if self.input.poll_gesture(&quit_gesture) {
                     running = false;
                 }
+                if self.input.poll_gesture(&explode_gesture) {
+                    self.simulation.explode();
+                }
                 self.controller.update(delta_time, &mut self.input, &mut self.camera);
-                self.timers.stop(self.ctrl_timer);
 
                 self.timers.start(self.sim_timer);
-                self.simulation.update(delta_time);
+                self.simulation.update(&mut self.timers, delta_time);
                 self.timers.stop(self.sim_timer);
 
                 self.timers.stop(self.cpu_timer);

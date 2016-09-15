@@ -213,6 +213,18 @@ impl<Scalar: Field> Vec3<Scalar> {
     }
 }
 
+impl Vec3<f32> {
+    #[inline]
+    pub fn max(self, scalar: f32) -> Self {
+        Vec3([self.0[0].max(scalar), self.0[1].max(scalar), self.0[2].max(scalar)])
+    }
+
+    #[inline]
+    pub fn min(self, scalar: f32) -> Self {
+        Vec3([self.0[0].min(scalar), self.0[1].min(scalar), self.0[2].min(scalar)])
+    }
+}
+
 impl<Scalar: Field> Vector for Vec3<Scalar> {
     type Scalar = Scalar;
 
