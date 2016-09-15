@@ -5,6 +5,8 @@ use std::f32::consts;
 use std::collections::BinaryHeap;
 use super::bvh::{Bvh, Aabb};
 use super::frame_timers::{FrameTimers, FrameTimerId};
+use rayon::prelude::*;
+use std::cell::RefCell;
 
 const DRAG_COEFFICIENT: f32 = 1.0;
 const COMPRESS: f32 = 5000.0;
@@ -172,13 +174,14 @@ impl Simulation {
         let positions = &self.positions[..];
         let velocities = &self.velocities[..];
         let radii = &self.radii[..];
-        let intersection_stack = &mut self.intersection_stack;
         let bvh = &self.bvh;
+        let explode = self.explode;
+        let timestep = self.timestep;
 
-        let planes = [Vec4f::new(1.0, 0.0, 0.0, 20.0),
-                      Vec4f::new(-1.0, 0.0, 0.0, 20.0),
-                      Vec4f::new(0.0, 0.0, 1.0, 20.0),
-                      Vec4f::new(0.0, 0.0, -1.0, 20.0),
+        let planes = [Vec4f::new(1.0, 0.0, 0.0, 5.0),
+                      Vec4f::new(-1.0, 0.0, 0.0, 5.0),
+                      Vec4f::new(0.0, 0.0, 1.0, 5.0),
+                      Vec4f::new(0.0, 0.0, -1.0, 5.0),
                       Vec4f::new(0.0, 1.0, 0.0, 0.0)];
 
         assert!(forces.len() == len);
@@ -186,60 +189,72 @@ impl Simulation {
         assert!(velocities.len() == len);
         assert!(radii.len() == len);
 
-        let mut avg_n = 0.0;
-        for i_body in 0..len {
+        forces.par_iter_mut().enumerate().for_each(|(i_body, force)| {
             let position = positions[i_body];
             let velocity = velocities[i_body];
+            let radius = radii[i_body];
             let speed = velocities[i_body].norm();
-            let drag = speed * consts::PI * radii[i_body] * radii[i_body] * DRAG_COEFFICIENT;
-            forces[i_body] -= velocity * drag;
-            forces[i_body] += Vec3f::new(0.0, -GRAVITY, 0.0);
+            let drag = speed * consts::PI * radius * radius * DRAG_COEFFICIENT;
+            *force -= velocity * drag;
+            *force += Vec3f::new(0.0, -GRAVITY, 0.0);
 
             for plane in &planes {
-                let plane_distance = plane.xyz().dot(&positions[i_body]) + plane[3];
-                let distance_difference = plane_distance - radii[i_body];
+                let plane_distance = plane.xyz().dot(&position) + plane[3];
+                let distance_difference = plane_distance - radius;
                 if distance_difference < 0.0 {
-                    forces[i_body] += plane.xyz() * (-distance_difference * COMPRESS);
-                }
-            }
-
-            if self.explode {
-                let direction = position - Vec3f::new(0.0, 0.0, 0.0);
-                let distance_squared = direction.squared_norm();
-                forces[i_body] += direction * EXPLODE /
-                                  (distance_squared * distance_squared.sqrt());
-            }
-
-            for j_body in
-                bvh.intersect_sphere(intersection_stack, positions[i_body], radii[i_body]) {
-                if j_body == i_body {
-                    continue;
-                }
-                avg_n += 1.0;
-                let direction = positions[i_body] - positions[j_body];
-                let min_distance = radii[i_body] + radii[j_body];
-                let squared_distance = direction.squared_norm();
-                if squared_distance <= 1e-8 {
-                    continue;
-                }
-
-                if squared_distance < min_distance * min_distance {
-                    let distance = squared_distance.sqrt() + 1e-8;
-                    let correction = (min_distance / distance - 1.0) * COMPRESS * 0.5;
-
-                    let relative = velocities[i_body] - velocities[j_body];
-                    let normal_dot = relative.dot(&direction) / distance;
+                    let normal_dot = velocity.dot(&plane.xyz());
                     if normal_dot < 0.0 {
-                        let normal_dot = normal_dot.max(-0.4 / self.timestep);
-                        forces[i_body] += relative * normal_dot * 1.0;
-                        forces[j_body] -= relative * normal_dot * 1.0;
+                        let normal_dot = normal_dot.max(-1.0 / (timestep * 0.5));
+                        *force += velocity * normal_dot * 1.0;
+                    }
+                    *force += plane.xyz() * (-distance_difference * COMPRESS);
+                }
+            }
+
+            if explode {
+                let direction = position - Vec3f::new(5.0, 2.0, 5.0);
+                let distance_squared = direction.squared_norm().max(1e-1);
+                let distance = distance_squared.sqrt();
+                *force += direction * EXPLODE / (distance_squared * distance);
+            }
+
+            thread_local! {
+                static thread_intersection_stack: RefCell<Vec<usize>> =
+                    RefCell::new(Vec::with_capacity(128));
+            };
+            thread_intersection_stack.with(|intersection_stack| {
+                let mut intersection_stack = intersection_stack.borrow_mut();
+                for j_body in bvh.intersect_sphere(&mut intersection_stack, position, radius) {
+                    if j_body == i_body {
+                        continue;
+                    }
+                    let other_position = positions[j_body];
+                    let other_radius = radii[j_body];
+                    let other_velocity = velocities[j_body];
+
+                    let direction = position - other_position;
+                    let min_distance = radius + other_radius;
+                    let squared_distance = direction.squared_norm();
+                    if squared_distance <= 1e-8 {
+                        continue;
                     }
 
-                    forces[i_body] += direction * correction;
-                    forces[j_body] -= direction * correction;
+                    if squared_distance < min_distance * min_distance {
+                        let distance = squared_distance.sqrt() + 1e-8;
+                        let correction = (min_distance / distance - 1.0) * COMPRESS * 0.5;
+
+                        let relative = velocity - other_velocity;
+                        let normal_dot = relative.dot(&direction) / distance;
+                        if normal_dot < 0.0 {
+                            let normal_dot = normal_dot.max(-0.5 / (timestep * 0.5));
+                            *force += relative * normal_dot * 1.0;
+                        }
+
+                        *force += direction * correction;
+                    }
                 }
-            }
-        }
+            });
+        });
     }
 
     fn velocities_halfstep(&mut self) {

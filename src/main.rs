@@ -7,6 +7,7 @@ extern crate glium_sdl2;
 extern crate time;
 extern crate idcontain;
 extern crate rand;
+extern crate rayon;
 
 #[macro_use]
 extern crate glium;

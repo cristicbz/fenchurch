@@ -64,12 +64,12 @@ impl App {
                                                Gesture::KeyTrigger(Scancode::Escape)]);
         let explode_gesture = Gesture::KeyHold(Scancode::E);
 
-        let num_spheres = 20000;
+        let num_spheres = 40000;
         let mut rng = rand::ChaChaRng::new_unseeded();
         for _ in 0..num_spheres {
-            let position = Vec3f::new((rng.gen::<f32>() - 0.5) * 2.0 * 10.0,
-                                      (rng.gen::<f32>() - 0.5) * 2.0 * 10.0 + 10.0,
-                                      (rng.gen::<f32>() - 0.5) * 2.0 * 10.0);
+            let position = Vec3f::new((rng.gen::<f32>() - 0.5) * 2.0 * 5.0,
+                                      (rng.gen::<f32>() - 0.5) * 2.0 * 5.0 + 10.0,
+                                      (rng.gen::<f32>() - 0.5) * 2.0 * 5.0);
             let velocity = Vec3f::new((rng.gen::<f32>() - 0.5) * 10.,
                                       (rng.gen::<f32>() - 0.5) * 10.,
                                       (rng.gen::<f32>() - 0.5) * 10. + 10.0);

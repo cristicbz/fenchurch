@@ -27,16 +27,10 @@ impl Aabb {
         }
     }
 
-    pub fn union<'a, I: IntoIterator<Item = &'a Aabb>>(bbs: I) -> Option<Self> {
-        let mut bbs = bbs.into_iter();
-        match bbs.next() {
-            Some(&aabb) => {
-                let mut aabb = aabb;
-                aabb.add_aabbs(bbs);
-                Some(aabb)
-            }
-            None => None,
-        }
+    pub fn union<'a, I: IntoIterator<Item = &'a Aabb>>(bbs: I) -> Self {
+        let mut aabb = Aabb::negative();
+        aabb.add_aabbs(bbs);
+        aabb
     }
 
     pub fn new(point1: Vec3f, point2: Vec3f) -> Self {
@@ -97,18 +91,33 @@ impl Aabb {
         }
     }
 
+    #[inline]
     pub fn add_aabb(&mut self, other: &Aabb) {
         let Aabb { ref mut min, ref mut max } = *self;
         let Aabb { min: other_min, max: other_max } = *other;
 
-        for i in 0..3 {
-            if other_min[i] < min[i] {
-                min[i] = other_min[i];
-            }
+        if other_min[0] < min[0] {
+            min[0] = other_min[0];
+        }
 
-            if other_max[i] > max[i] {
-                max[i] = other_max[i];
-            }
+        if other_min[1] < min[1] {
+            min[1] = other_min[1];
+        }
+
+        if other_min[2] < min[2] {
+            min[2] = other_min[2];
+        }
+
+        if other_max[0] > max[0] {
+            max[0] = other_max[0];
+        }
+
+        if other_max[1] > max[1] {
+            max[1] = other_max[1];
+        }
+
+        if other_max[2] > max[2] {
+            max[2] = other_max[2];
         }
     }
 
@@ -135,9 +144,9 @@ struct Node {
 }
 
 impl Node {
-    fn new() -> Self {
+    fn new(aabb: Aabb) -> Self {
         Node {
-            aabb: Aabb::negative(),
+            aabb: aabb,
             child: INVALID_ID,
             leaf_end: INVALID_ID,
         }
@@ -214,7 +223,7 @@ impl Bvh {
         centroids.extend(bbs.iter().map(|bb| bb.centroid()));
 
         nodes.reserve(bbs.len() / 2);
-        nodes.push(Node::new());
+        nodes.push(Node::new(Aabb::union(&bbs[..])));
         work_stack.push(Work {
             index: 0,
             start: 0,
@@ -226,19 +235,18 @@ impl Bvh {
             assert!(bbs.len() == leaves.len());
             assert!(bbs.len() == centroids.len());
 
-            let aabb = Aabb::union(&bbs[start..end]).unwrap();
-            nodes[index] = if end - start <= MIN_LEAVES {
-                Node {
-                    aabb: aabb,
-                    child: start as u32,
-                    leaf_end: end as u32,
-                }
+            let aabb = nodes[index].aabb;
+
+            let (child, leaf_end) = if end - start <= MIN_LEAVES {
+                (start as u32, end as u32)
             } else {
                 let longest_axis = aabb.longest_axis();
-                let limit = binning_sah_limit(longest_axis,
-                                              &aabb,
-                                              &centroids[start..end],
-                                              &bbs[start..end]);
+                let (limit, left_bb, right_bb) = binning_sah_limit(longest_axis,
+                                                                   &aabb,
+                                                                   &centroids[start..end],
+                                                                   &bbs[start..end]);
+                // let limit = median3_limit(longest_axis, &centroids[start..end]);
+
 
                 let mut split = start;
                 for i_leaf in start..end {
@@ -250,17 +258,16 @@ impl Bvh {
                     }
                 }
 
+
                 if split == end || split == start {
-                    Node {
-                        aabb: aabb,
-                        child: start as u32,
-                        leaf_end: end as u32,
-                    }
+                    (start as u32, end as u32)
                 } else {
+                    // let left_bb = Aabb::union(&bbs[start..split]);
+                    // let right_bb = Aabb::union(&bbs[split..end]);
                     let index1 = nodes.len();
                     let index2 = nodes.len() + 1;
-                    nodes.push(Node::new());
-                    nodes.push(Node::new());
+                    nodes.push(Node::new(left_bb));
+                    nodes.push(Node::new(right_bb));
                     work_stack.push(Work {
                         index: index2,
                         start: split,
@@ -272,13 +279,12 @@ impl Bvh {
                         end: split,
                     });
 
-                    Node {
-                        aabb: aabb,
-                        child: index1 as u32,
-                        leaf_end: INVALID_ID,
-                    }
+                    (index1 as u32, INVALID_ID)
                 }
             };
+
+            nodes[index].child = child;
+            nodes[index].leaf_end = leaf_end;
         }
     }
 
@@ -364,14 +370,18 @@ impl<'a, 'b> Iterator for SphereIntersectIter<'a, 'b> {
 }
 
 
-fn median3_limit(axis: usize, centroids: &[Vec3f], bbs: &[Aabb]) -> f32 {
+fn median3_limit(axis: usize, centroids: &[Vec3f]) -> f32 {
     median3(centroids[0][axis],
             centroids[centroids.len() / 2][axis],
             centroids[centroids.len() - 1][axis])
 }
 
-fn binning_sah_limit(axis: usize, aabb: &Aabb, centroids: &[Vec3f], bbs: &[Aabb]) -> f32 {
-    const NUM_BINS: usize = 4;
+fn binning_sah_limit(axis: usize,
+                     aabb: &Aabb,
+                     centroids: &[Vec3f],
+                     bbs: &[Aabb])
+                     -> (f32, Aabb, Aabb) {
+    const NUM_BINS: usize = 8;
 
     assert!(axis < 3);
     let min_limit = aabb.min()[axis];
@@ -379,6 +389,7 @@ fn binning_sah_limit(axis: usize, aabb: &Aabb, centroids: &[Vec3f], bbs: &[Aabb]
 
     let mut bin_bbs = [Aabb::negative(); NUM_BINS];
     let mut bin_counts = [0u32; NUM_BINS];
+    let mut left_bbs = [Aabb::negative(); NUM_BINS];
     let mut left_costs = [0.0; NUM_BINS];
 
     let binning_const = NUM_BINS as f32 * (1.0 - 1e-5) / (max_limit - min_limit);
@@ -393,11 +404,13 @@ fn binning_sah_limit(axis: usize, aabb: &Aabb, centroids: &[Vec3f], bbs: &[Aabb]
     for bin_index in 0..NUM_BINS - 1 {
         left_bb.add_aabb(&bin_bbs[bin_index]);
         left_count += bin_counts[bin_index];
+        left_bbs[bin_index] = left_bb;
         left_costs[bin_index] = left_bb.area() * (left_count as f32);
     }
 
     let mut best_bin_cost = f32::INFINITY;
     let mut best_bin_index = NUM_BINS + 1;
+    let mut best_right_bb = Aabb::negative();
     let mut right_bb = Aabb::negative();
     let mut right_count = 0;
     for bin_index in (0..NUM_BINS - 1).rev() {
@@ -408,10 +421,13 @@ fn binning_sah_limit(axis: usize, aabb: &Aabb, centroids: &[Vec3f], bbs: &[Aabb]
         if cost < best_bin_cost {
             best_bin_cost = cost;
             best_bin_index = bin_index;
+            best_right_bb = right_bb;
         }
     }
 
-    (best_bin_index + 1) as f32 / binning_const + min_limit
+    ((best_bin_index + 1) as f32 / binning_const + min_limit,
+     left_bbs[best_bin_index],
+     best_right_bb)
 }
 
 #[cfg(test)]
@@ -427,8 +443,7 @@ mod tests {
                                  Aabb::of_sphere(&Vec3f::zero(), 2.0),
                                  Aabb::of_sphere(&Vec3f::new(1.0, 0.0, 0.0), 1.0),
                                  Aabb::of_sphere(&Vec3f::new(-1.0, 0.0, 0.0), 2.0),
-                                 Aabb::of_sphere(&Vec3f::new(1.0, 2.0, 0.0), 1.0)])
-            .unwrap();
+                                 Aabb::of_sphere(&Vec3f::new(1.0, 2.0, 0.0), 1.0)]);
 
         assert_eq!(aabb.min(), &Vec3f::new(-3.0, -2.0, -2.0));
         assert_eq!(aabb.max(), &Vec3f::new(2.0, 3.0, 2.0));
