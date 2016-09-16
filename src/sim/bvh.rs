@@ -1,189 +1,13 @@
-use idcontain::{Id, OptionId, IdVec};
-use math::Vec3f;
-use super::utils::{pmin_pmax, AssertOrd};
-use num::Zero;
+use math::{Aabb, Vec3f};
+use rayon;
+use rayon::prelude::*;
 use std::f32;
-
-#[derive(Copy, Clone, Debug)]
-pub struct Aabb {
-    min: Vec3f,
-    max: Vec3f,
-}
-
-impl Aabb {
-    pub fn negative() -> Self {
-        Aabb {
-            min: Vec3f::new(f32::INFINITY, f32::INFINITY, f32::INFINITY),
-            max: Vec3f::new(-f32::INFINITY, -f32::INFINITY, -f32::INFINITY),
-        }
-    }
-
-    pub fn of_sphere(position: &Vec3f, radius: f32) -> Self {
-        assert!(radius > 0.0);
-        let radius = Vec3f::new(radius, radius, radius);
-        Aabb {
-            min: *position - radius,
-            max: *position + radius,
-        }
-    }
-
-    pub fn union<'a, I: IntoIterator<Item = &'a Aabb>>(bbs: I) -> Self {
-        let mut aabb = Aabb::negative();
-        aabb.add_aabbs(bbs);
-        aabb
-    }
-
-    pub fn new(point1: Vec3f, point2: Vec3f) -> Self {
-        let tuples = [pmin_pmax(point1[0], point2[0]),
-                      pmin_pmax(point1[1], point2[1]),
-                      pmin_pmax(point1[2], point2[2])];
-        Aabb {
-            min: Vec3f::new(tuples[0].0, tuples[1].0, tuples[2].0),
-            max: Vec3f::new(tuples[0].1, tuples[1].1, tuples[2].1),
-        }
-    }
-
-    pub fn area(&self) -> f32 {
-        let edges = self.max - self.min;
-        2.0 * (edges[0] * edges[1] + edges[1] * edges[2] + edges[0] * edges[2])
-    }
-
-    #[inline]
-    pub fn intersects_sphere(&self, position: Vec3f, radius: f32) -> bool {
-        let min_diff = self.min - position;
-        let max_diff = position - self.max;
-
-        return min_diff[0] <= radius && min_diff[1] <= radius && min_diff[2] <= radius &&
-               max_diff[0] <= radius && max_diff[1] <= radius &&
-               max_diff[2] <= radius;
-    }
-
-    pub fn longest_axis(&self) -> usize {
-        let diagonal = self.max - self.min;
-        if diagonal[0] > diagonal[1] {
-            if diagonal[0] > diagonal[2] { 0 } else { 2 }
-        } else {
-            if diagonal[1] > diagonal[2] { 1 } else { 2 }
-        }
-    }
-
-    pub fn centroid(&self) -> Vec3f {
-        (self.min + self.max) * 0.5
-    }
-
-    pub fn min(&self) -> &Vec3f {
-        &self.min
-    }
-
-    pub fn max(&self) -> &Vec3f {
-        &self.max
-    }
-
-    pub fn add_point(&mut self, point: Vec3f) {
-        let Aabb { ref mut min, ref mut max } = *self;
-
-        for i in 0..3 {
-            if point[i] < min[i] {
-                min[i] = point[i];
-            } else if point[i] > max[i] {
-                max[i] = point[i];
-            }
-        }
-    }
-
-    #[inline]
-    pub fn add_aabb(&mut self, other: &Aabb) {
-        let Aabb { ref mut min, ref mut max } = *self;
-        let Aabb { min: other_min, max: other_max } = *other;
-
-        if other_min[0] < min[0] {
-            min[0] = other_min[0];
-        }
-
-        if other_min[1] < min[1] {
-            min[1] = other_min[1];
-        }
-
-        if other_min[2] < min[2] {
-            min[2] = other_min[2];
-        }
-
-        if other_max[0] > max[0] {
-            max[0] = other_max[0];
-        }
-
-        if other_max[1] > max[1] {
-            max[1] = other_max[1];
-        }
-
-        if other_max[2] > max[2] {
-            max[2] = other_max[2];
-        }
-    }
-
-    pub fn add_aabbs<'a, I: IntoIterator<Item = &'a Aabb>>(&mut self, bbs: I) {
-        for bb in bbs {
-            self.add_aabb(bb);
-        }
-    }
-
-    pub fn add_sphere(&mut self, position: &Vec3f, radius: f32) {
-        self.add_aabb(&Self::of_sphere(position, radius));
-    }
-}
-
-
-const INVALID_ID: u32 = 0xff_ff_ff_ff;
-const MAX_CAPACITY: u32 = INVALID_ID;
-
-#[derive(Debug)]
-struct Node {
-    aabb: Aabb,
-    child: u32,
-    leaf_end: u32,
-}
-
-impl Node {
-    fn new(aabb: Aabb) -> Self {
-        Node {
-            aabb: aabb,
-            child: INVALID_ID,
-            leaf_end: INVALID_ID,
-        }
-    }
-}
-
-struct Work {
-    index: usize,
-    start: usize,
-    end: usize,
-}
+use super::atomic_mut_indexer::AtomicMutIndexer;
 
 pub struct Bvh {
     nodes: Vec<Node>,
     leaves: Vec<u32>,
-    work_stack: Vec<Work>,
     bbs: Vec<Aabb>,
-    centroids: Vec<Vec3f>,
-}
-
-
-fn median3(a: f32, b: f32, c: f32) -> f32 {
-    if a < b {
-        if a >= c {
-            a
-        } else if b < c {
-            b
-        } else {
-            c
-        }
-    } else if a < c {
-        a
-    } else if b >= c {
-        b
-    } else {
-        c
-    }
 }
 
 impl Bvh {
@@ -192,100 +16,41 @@ impl Bvh {
             nodes: Vec::new(),
             leaves: Vec::new(),
             bbs: Vec::new(),
-            work_stack: Vec::with_capacity(64),
-            centroids: Vec::new(),
         }
     }
 
     pub fn rebuild<I: IntoIterator<Item = Aabb>>(&mut self, bbs_iter: I) {
-        const MIN_LEAVES: usize = 10;
-
-        let Bvh { ref mut nodes,
-                  ref mut leaves,
-                  ref mut bbs,
-                  ref mut work_stack,
-                  ref mut centroids,
-                  .. } = *self;
-
+        let Bvh { ref mut nodes, ref mut leaves, ref mut bbs, .. } = *self;
         nodes.clear();
-        centroids.clear();
-
+        leaves.clear();
         bbs.clear();
+
         bbs.extend(bbs_iter);
         let num_bbs = bbs.len();
         assert!(num_bbs <= (MAX_CAPACITY as usize));
         if num_bbs == 0 {
             return;
         }
-
-        leaves.clear();
         leaves.extend(0..num_bbs as u32);
-        centroids.extend(bbs.iter().map(|bb| bb.centroid()));
 
-        nodes.reserve(bbs.len() / 2);
-        nodes.push(Node::new(Aabb::union(&bbs[..])));
-        work_stack.push(Work {
-            index: 0,
-            start: 0,
-            end: num_bbs,
-        });
-        while let Some(Work { index, start, end }) = work_stack.pop() {
-            assert!(start < end);
-            assert!(end <= bbs.len());
-            assert!(bbs.len() == leaves.len());
-            assert!(bbs.len() == centroids.len());
-
-            let aabb = nodes[index].aabb;
-
-            let (child, leaf_end) = if end - start <= MIN_LEAVES {
-                (start as u32, end as u32)
-            } else {
-                let longest_axis = aabb.longest_axis();
-                let (limit, left_bb, right_bb) = binning_sah_limit(longest_axis,
-                                                                   &aabb,
-                                                                   &centroids[start..end],
-                                                                   &bbs[start..end]);
-                // let limit = median3_limit(longest_axis, &centroids[start..end]);
-
-
-                let mut split = start;
-                for i_leaf in start..end {
-                    if centroids[i_leaf][longest_axis] <= limit {
-                        bbs.swap(split, i_leaf);
-                        leaves.swap(split, i_leaf);
-                        centroids.swap(split, i_leaf);
-                        split += 1;
-                    }
-                }
-
-
-                if split == end || split == start {
-                    (start as u32, end as u32)
-                } else {
-                    // let left_bb = Aabb::union(&bbs[start..split]);
-                    // let right_bb = Aabb::union(&bbs[split..end]);
-                    let index1 = nodes.len();
-                    let index2 = nodes.len() + 1;
-                    nodes.push(Node::new(left_bb));
-                    nodes.push(Node::new(right_bb));
-                    work_stack.push(Work {
-                        index: index2,
-                        start: split,
-                        end: end,
-                    });
-                    work_stack.push(Work {
-                        index: index1,
-                        start: start,
-                        end: split,
-                    });
-
-                    (index1 as u32, INVALID_ID)
-                }
-            };
-
-            nodes[index].child = child;
-            nodes[index].leaf_end = leaf_end;
+        if num_bbs < MIN_LEAVES {
+            nodes.push(Node {
+                aabb: Aabb::union(&bbs[..]),
+                child: 0,
+                leaf_end: num_bbs as u32,
+            });
+            return;
         }
+
+        nodes.resize((num_bbs + 1) * 2, Node::new());
+        let num_nodes = {
+            let node_indexer = AtomicMutIndexer::new(nodes);
+            let (root_index, root) = node_indexer.get().unwrap();
+            assert_eq!(root_index, 0);
+            expand_node(root, &node_indexer, Aabb::union(&bbs[..]), bbs, leaves, 0);
+            node_indexer.done()
+        };
+        nodes.truncate(num_nodes);
     }
 
     pub fn intersect_sphere<'a, 'b>(&'a self,
@@ -304,6 +69,118 @@ impl Bvh {
             radius: radius,
             state: State::FindIntersecting,
         }
+    }
+}
+
+const INVALID_ID: u32 = 0xff_ff_ff_ff;
+const MAX_CAPACITY: u32 = INVALID_ID;
+const MIN_LEAVES: usize = 8;
+
+#[derive(Clone, Debug)]
+struct Node {
+    aabb: Aabb,
+    child: u32,
+    leaf_end: u32,
+}
+
+impl Node {
+    fn new() -> Self {
+        Node {
+            aabb: Aabb::negative(),
+            child: INVALID_ID,
+            leaf_end: INVALID_ID,
+        }
+    }
+}
+
+
+fn expand_node(node: &mut Node,
+               node_indexer: &AtomicMutIndexer<Node>,
+               aabb: Aabb,
+               bbs: &mut [Aabb],
+               leaves: &mut [u32],
+               offset: u32) {
+    let len = bbs.len();
+    assert!(len >= MIN_LEAVES);
+    assert!(leaves.len() == len);
+    let longest_axis = aabb.longest_axis();
+    // let limit = median3_limit(longest_axis, bbs);
+    let (limit, left_bb, right_bb) = match binned_sah_limit(longest_axis, &aabb, bbs) {
+        Some(split) => split,
+        None => {
+            *node = Node {
+                aabb: aabb,
+                child: offset,
+                leaf_end: offset + len as u32,
+            };
+            return;
+        }
+    };
+
+    let mut split = 0;
+    for i_leaf in 0..len {
+        if bbs[i_leaf].centroid()[longest_axis] <= limit {
+            bbs.swap(split, i_leaf);
+            leaves.swap(split, i_leaf);
+            split += 1;
+        }
+    }
+
+    if split == 0 || split == len {
+        split = len / 2;
+    }
+    let (left_bbs, right_bbs) = bbs.split_at_mut(split);
+    let (left_leaves, right_leaves) = leaves.split_at_mut(split);
+
+    // let (left_bb, right_bb) = (Aabb::union(&left_bbs), Aabb::union(&right_bbs));
+    let (index1, child1, child2) = node_indexer.get2().unwrap();
+
+    *node = Node {
+        aabb: aabb,
+        child: index1 as u32,
+        leaf_end: INVALID_ID,
+    };
+
+    if left_bbs.len() < MIN_LEAVES && right_bbs.len() < MIN_LEAVES {
+        *child1 = Node {
+            aabb: left_bb,
+            child: offset,
+            leaf_end: offset + split as u32,
+        };
+        *child2 = Node {
+            aabb: right_bb,
+            child: offset + split as u32,
+            leaf_end: offset + len as u32,
+        };
+    } else if left_bbs.len() < MIN_LEAVES {
+        *child1 = Node {
+            aabb: left_bb,
+            child: offset,
+            leaf_end: offset + split as u32,
+        };
+        expand_node(child2,
+                    node_indexer,
+                    right_bb,
+                    right_bbs,
+                    right_leaves,
+                    offset + split as u32)
+    } else if right_bbs.len() < MIN_LEAVES {
+        *child2 = Node {
+            aabb: right_bb,
+            child: offset + split as u32,
+            leaf_end: offset + len as u32,
+        };
+        expand_node(child1, node_indexer, left_bb, left_bbs, left_leaves, offset);
+    } else {
+        rayon::join(|| expand_node(child1, node_indexer, left_bb, left_bbs, left_leaves, offset),
+                    || {
+            expand_node(child2,
+                        node_indexer,
+                        right_bb,
+                        right_bbs,
+                        right_leaves,
+                        offset + split as u32)
+        });
     }
 }
 
@@ -369,41 +246,90 @@ impl<'a, 'b> Iterator for SphereIntersectIter<'a, 'b> {
     }
 }
 
+// fn median3_limit(axis: usize, bbs: &[Aabb]) -> f32 {
+//    median3(bbs[0].centroid()[axis],
+//            bbs[bbs.len() / 2].centroid()[axis],
+//            bbs[bbs.len() - 1].centroid()[axis])
+// }
+// fn median3(a: f32, b: f32, c: f32) -> f32 {
+//    if a < b {
+//        if a >= c {
+//            a
+//        } else if b < c {
+//            b
+//        } else {
+//            c
+//        }
+//    } else if a < c {
+//        a
+//    } else if b >= c {
+//        b
+//    } else {
+//        c
+//    }
+// }
 
-fn median3_limit(axis: usize, centroids: &[Vec3f]) -> f32 {
-    median3(centroids[0][axis],
-            centroids[centroids.len() / 2][axis],
-            centroids[centroids.len() - 1][axis])
+const NUM_BINS: usize = 8;
+
+#[derive(Copy, Clone)]
+struct Bins {
+    bbs: [Aabb; NUM_BINS],
+    counts: [u32; NUM_BINS],
 }
 
-fn binning_sah_limit(axis: usize,
-                     aabb: &Aabb,
-                     centroids: &[Vec3f],
-                     bbs: &[Aabb])
-                     -> (f32, Aabb, Aabb) {
-    const NUM_BINS: usize = 8;
+impl Bins {
+    fn identity() -> Self {
+        Bins {
+            bbs: [Aabb::negative(); NUM_BINS],
+            counts: [0; NUM_BINS],
+        }
+    }
 
+    fn merge(mut self, other: Bins) -> Self {
+        for bin_index in 0..NUM_BINS {
+            self.counts[bin_index] += other.counts[bin_index];
+            self.bbs[bin_index].add_aabb(&other.bbs[bin_index]);
+        }
+        self
+    }
+
+    fn create(binning_const: f32, min_limit: f32, axis: usize, bbs: &[Aabb]) -> Self {
+        let mut bins = Bins::identity();
+        for bb in bbs {
+            let bin_index =
+                (binning_const * ((bb.min()[axis] + bb.max()[axis]) * 0.5 - min_limit)) as usize;
+            bins.counts[bin_index] += 1;
+            bins.bbs[bin_index].add_aabb(bb);
+        }
+        bins
+    }
+}
+
+
+fn binned_sah_limit(axis: usize, aabb: &Aabb, bbs: &[Aabb]) -> Option<(f32, Aabb, Aabb)> {
+    const CHUNK_SIZE: usize = 16384;
     assert!(axis < 3);
+    let len = bbs.len();
     let min_limit = aabb.min()[axis];
     let max_limit = aabb.max()[axis];
 
-    let mut bin_bbs = [Aabb::negative(); NUM_BINS];
-    let mut bin_counts = [0u32; NUM_BINS];
+    let binning_const = (NUM_BINS - 1) as f32 * (1.0 - 1e-5) / (max_limit - min_limit);
+    let bins = if len < CHUNK_SIZE * 2 {
+        bbs.par_chunks(CHUNK_SIZE)
+            .weight_max()
+            .map(|bbs| Bins::create(binning_const, min_limit, axis, bbs))
+            .reduce_with_identity(Bins::identity(), Bins::merge)
+    } else {
+        Bins::create(binning_const, min_limit, axis, bbs)
+    };
+
     let mut left_bbs = [Aabb::negative(); NUM_BINS];
     let mut left_costs = [0.0; NUM_BINS];
-
-    let binning_const = NUM_BINS as f32 * (1.0 - 1e-5) / (max_limit - min_limit);
-    for (index, &centroid) in centroids.iter().enumerate() {
-        let bin_index = (binning_const * (centroid[axis] - min_limit)) as usize;
-        bin_counts[bin_index] += 1;
-        bin_bbs[bin_index].add_aabb(&bbs[index]);
-    }
-
     let mut left_bb = Aabb::negative();
     let mut left_count = 0;
     for bin_index in 0..NUM_BINS - 1 {
-        left_bb.add_aabb(&bin_bbs[bin_index]);
-        left_count += bin_counts[bin_index];
+        left_bb.add_aabb(&bins.bbs[bin_index]);
+        left_count += bins.counts[bin_index];
         left_bbs[bin_index] = left_bb;
         left_costs[bin_index] = left_bb.area() * (left_count as f32);
     }
@@ -414,8 +340,8 @@ fn binning_sah_limit(axis: usize,
     let mut right_bb = Aabb::negative();
     let mut right_count = 0;
     for bin_index in (0..NUM_BINS - 1).rev() {
-        right_bb.add_aabb(&bin_bbs[bin_index + 1]);
-        right_count += bin_counts[bin_index + 1];
+        right_bb.add_aabb(&bins.bbs[bin_index + 1]);
+        right_count += bins.counts[bin_index + 1];
         let cost = left_costs[bin_index] + right_bb.area() * (right_count as f32);
 
         if cost < best_bin_cost {
@@ -425,9 +351,13 @@ fn binning_sah_limit(axis: usize,
         }
     }
 
-    ((best_bin_index + 1) as f32 / binning_const + min_limit,
-     left_bbs[best_bin_index],
-     best_right_bb)
+    if best_bin_cost >= len as f32 * aabb.area() {
+        None
+    } else {
+        Some(((best_bin_index + 1) as f32 / binning_const + min_limit,
+              left_bbs[best_bin_index],
+              best_right_bb))
+    }
 }
 
 #[cfg(test)]

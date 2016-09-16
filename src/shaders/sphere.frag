@@ -17,7 +17,7 @@ out vec4 output_colour;
 
 void main() {
     vec3 ray = normalize(f_ray);
-    float quadratic_b = 2.0 * dot(ray, -f_camera_position);
+    float quadratic_b = -2.0 * dot(ray, f_camera_position);
     float discriminant = (quadratic_b * quadratic_b) - (4.0 * f_quadratic_c);
     if (discriminant < 0.0) {
         discard;

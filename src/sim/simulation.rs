@@ -1,15 +1,14 @@
 use idcontain::{IdVec, Id};
-use math::{Vec3f, Vector, Vec4f};
+use math::{Vec3f, Vector, Vec4f, Aabb};
 use num::Zero;
 use std::f32::consts;
-use std::collections::BinaryHeap;
-use super::bvh::{Bvh, Aabb};
+use super::bvh::Bvh;
 use super::frame_timers::{FrameTimers, FrameTimerId};
 use rayon::prelude::*;
 use std::cell::RefCell;
 
 const DRAG_COEFFICIENT: f32 = 1.0;
-const COMPRESS: f32 = 5000.0;
+const COMPRESS: f32 = 10000.0;
 const EXPLODE: f32 = 5000.0;
 const GRAVITY: f32 = 20.0;
 
@@ -23,7 +22,6 @@ pub struct Simulation {
     forces_timer: FrameTimerId,
 
     bvh: Bvh,
-    intersection_stack: Vec<usize>,
 
     timestep: f32,
     colours: Vec<Vec3f>,
@@ -57,7 +55,6 @@ impl Simulation {
         Simulation {
             entities: IdVec::with_capacity(capacity),
             bvh: Bvh::new(),
-            intersection_stack: Vec::new(),
 
             bvh_timer: frame_timers.new_stopped("sim.bvh"),
             forces_timer: frame_timers.new_stopped("sim.frc"),
@@ -189,72 +186,70 @@ impl Simulation {
         assert!(velocities.len() == len);
         assert!(radii.len() == len);
 
-        forces.par_iter_mut().enumerate().for_each(|(i_body, force)| {
-            let position = positions[i_body];
-            let velocity = velocities[i_body];
-            let radius = radii[i_body];
-            let speed = velocities[i_body].norm();
-            let drag = speed * consts::PI * radius * radius * DRAG_COEFFICIENT;
-            *force -= velocity * drag;
-            *force += Vec3f::new(0.0, -GRAVITY, 0.0);
+        forces.par_iter_mut()
+            .enumerate()
+            .zip(positions)
+            .zip(velocities)
+            .zip(radii)
+            .for_each(|((((i_body, force), &position), &velocity), &radius)| {
+                let speed = velocity.norm();
+                let drag = speed * consts::PI * radius * radius * DRAG_COEFFICIENT;
+                *force -= velocity * drag;
+                *force += Vec3f::new(0.0, -GRAVITY, 0.0);
 
-            for plane in &planes {
-                let plane_distance = plane.xyz().dot(&position) + plane[3];
-                let distance_difference = plane_distance - radius;
-                if distance_difference < 0.0 {
-                    let normal_dot = velocity.dot(&plane.xyz());
-                    if normal_dot < 0.0 {
-                        let normal_dot = normal_dot.max(-1.0 / (timestep * 0.5));
-                        *force += velocity * normal_dot * 1.0;
-                    }
-                    *force += plane.xyz() * (-distance_difference * COMPRESS);
-                }
-            }
-
-            if explode {
-                let direction = position - Vec3f::new(5.0, 2.0, 5.0);
-                let distance_squared = direction.squared_norm().max(1e-1);
-                let distance = distance_squared.sqrt();
-                *force += direction * EXPLODE / (distance_squared * distance);
-            }
-
-            thread_local! {
-                static thread_intersection_stack: RefCell<Vec<usize>> =
-                    RefCell::new(Vec::with_capacity(128));
-            };
-            thread_intersection_stack.with(|intersection_stack| {
-                let mut intersection_stack = intersection_stack.borrow_mut();
-                for j_body in bvh.intersect_sphere(&mut intersection_stack, position, radius) {
-                    if j_body == i_body {
-                        continue;
-                    }
-                    let other_position = positions[j_body];
-                    let other_radius = radii[j_body];
-                    let other_velocity = velocities[j_body];
-
-                    let direction = position - other_position;
-                    let min_distance = radius + other_radius;
-                    let squared_distance = direction.squared_norm();
-                    if squared_distance <= 1e-8 {
-                        continue;
-                    }
-
-                    if squared_distance < min_distance * min_distance {
-                        let distance = squared_distance.sqrt() + 1e-8;
-                        let correction = (min_distance / distance - 1.0) * COMPRESS * 0.5;
-
-                        let relative = velocity - other_velocity;
-                        let normal_dot = relative.dot(&direction) / distance;
+                for plane in &planes {
+                    let plane_distance = plane.xyz().dot(&position) + plane[3];
+                    let distance_difference = plane_distance - radius;
+                    if distance_difference < 0.0 {
+                        let normal_dot = velocity.dot(&plane.xyz());
                         if normal_dot < 0.0 {
                             let normal_dot = normal_dot.max(-0.5 / (timestep * 0.5));
-                            *force += relative * normal_dot * 1.0;
+                            *force += velocity * normal_dot * 1.0;
                         }
-
-                        *force += direction * correction;
+                        *force += plane.xyz() * (-distance_difference * COMPRESS);
                     }
                 }
+
+                if explode {
+                    let direction = position - Vec3f::new(-5.0, 2.0, 5.0);
+                    let distance_squared = direction.squared_norm().max(1.0);
+                    let distance = distance_squared.sqrt();
+                    *force += direction * EXPLODE / (distance_squared * distance);
+                }
+
+                thread_local! {
+                    static THREAD_INTERSECTION_STACK: RefCell<Vec<usize>> =
+                        RefCell::new(Vec::with_capacity(128));
+                };
+                THREAD_INTERSECTION_STACK.with(|intersection_stack| {
+                    let mut intersection_stack = intersection_stack.borrow_mut();
+                    for j_body in bvh.intersect_sphere(&mut intersection_stack, position, radius) {
+                        if j_body == i_body {
+                            continue;
+                        }
+                        let other_position = positions[j_body];
+                        let other_radius = radii[j_body];
+                        let other_velocity = velocities[j_body];
+
+                        let direction = position - other_position;
+                        let min_distance = radius + other_radius;
+                        let squared_distance = direction.squared_norm();
+                        if squared_distance < min_distance * min_distance {
+                            let distance = squared_distance.sqrt() + 1e-8;
+                            let correction = (min_distance / distance - 1.0) * COMPRESS * 0.5;
+
+                            let relative = velocity - other_velocity;
+                            let normal_dot = relative.dot(&direction) / distance;
+                            if normal_dot < 0.0 {
+                                let normal_dot = normal_dot.max(-0.5 / (timestep * 0.5));
+                                *force += relative * normal_dot * 1.0;
+                            }
+
+                            *force += direction * correction;
+                        }
+                    }
+                });
             });
-        });
     }
 
     fn velocities_halfstep(&mut self) {
@@ -315,7 +310,7 @@ impl Simulation {
     fn remove_outliers(&mut self) {
         let mut removals = Vec::new();
         for (i_position, position) in self.positions.iter_mut().enumerate() {
-            if position.squared_norm() > 300.0 * 300.0 {
+            if position.squared_norm() > 1000.0 * 1000.0 {
                 removals.push(self.reverse_lookup[i_position]);
             }
         }
@@ -329,38 +324,4 @@ impl Simulation {
 
 fn deborrow<T>(value: T) -> T {
     value
-}
-
-#[derive(Debug, Copy, Clone)]
-pub struct Collision {
-    time: f32,
-    index: usize,
-    kind: CollisionKind,
-}
-use std::cmp::Ordering;
-
-impl PartialEq for Collision {
-    fn eq(&self, other: &Collision) -> bool {
-        self.time == other.time
-    }
-}
-
-impl Eq for Collision {}
-
-impl PartialOrd for Collision {
-    fn partial_cmp(&self, other: &Collision) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for Collision {
-    fn cmp(&self, other: &Collision) -> Ordering {
-        (-self.time).partial_cmp(&-other.time).expect("nan collision time")
-    }
-}
-
-#[derive(Debug, Copy, Clone)]
-pub enum CollisionKind {
-    Sphere { other_index: usize },
-    Wall { plane: Vec4f },
 }
