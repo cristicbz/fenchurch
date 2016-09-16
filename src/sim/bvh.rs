@@ -3,6 +3,7 @@ use rayon;
 use rayon::prelude::*;
 use std::f32;
 use super::atomic_mut_indexer::AtomicMutIndexer;
+use std::slice::Iter as SliceIter;
 
 pub struct Bvh {
     nodes: Vec<Node>,
@@ -59,22 +60,30 @@ impl Bvh {
                                     radius: f32)
                                     -> SphereIntersectIter<'a, 'b> {
         iter_stack.clear();
-        if !self.nodes.is_empty() {
+        if self.nodes.is_empty() || !self.nodes[0].aabb.intersects_sphere(position, radius) {
+            SphereIntersectIter {
+                bvh: self,
+                iter_stack: iter_stack,
+                position: position,
+                radius: radius,
+                state: State::Done,
+            }
+        } else {
             iter_stack.push(0);
-        }
-        SphereIntersectIter {
-            bvh: self,
-            iter_stack: iter_stack,
-            position: position,
-            radius: radius,
-            state: State::FindIntersecting,
+            SphereIntersectIter {
+                bvh: self,
+                iter_stack: iter_stack,
+                position: position,
+                radius: radius,
+                state: State::FindIntersecting,
+            }
         }
     }
 }
 
 const INVALID_ID: u32 = 0xff_ff_ff_ff;
 const MAX_CAPACITY: u32 = INVALID_ID;
-const MIN_LEAVES: usize = 8;
+const MIN_LEAVES: usize = 4;
 
 #[derive(Clone, Debug)]
 struct Node {
@@ -92,7 +101,6 @@ impl Node {
         }
     }
 }
-
 
 fn expand_node(node: &mut Node,
                node_indexer: &AtomicMutIndexer<Node>,
@@ -189,39 +197,35 @@ pub struct SphereIntersectIter<'a, 'b> {
     iter_stack: &'b mut Vec<usize>,
     position: Vec3f,
     radius: f32,
-    state: State,
+    state: State<'a>,
 }
 
 impl<'a, 'b> SphereIntersectIter<'a, 'b> {
-    fn first_intersection(&mut self) -> Option<usize> {
+    fn find_intersecting(&mut self) -> State<'a> {
+        let SphereIntersectIter { position, radius, .. } = *self;
         while let Some(node_index) = self.iter_stack.pop() {
-            if self.bvh.nodes[node_index].aabb.intersects_sphere(self.position, self.radius) {
-                return Some(node_index);
-            }
-        }
-        None
-    }
-
-    fn find_intersecting(&mut self) -> State {
-        loop {
-            let node_index = match self.first_intersection() {
-                Some(index) => index,
-                None => return State::Done,
-            };
             let node = &self.bvh.nodes[node_index];
-            if node.leaf_end == INVALID_ID {
-                self.iter_stack.push(node.child as usize);
-                self.iter_stack.push(node.child as usize + 1);
+            if node.leaf_end != INVALID_ID {
+                return State::YieldLeaves(
+                    self.bvh.leaves[node.child as usize..node.leaf_end as usize].iter());
             } else {
-                return State::YieldLeaves(node.child as usize, node.leaf_end as usize);
+                let child = node.child as usize;
+                if self.bvh.nodes[child].aabb.intersects_sphere(position, radius) {
+                    self.iter_stack.push(child);
+                }
+                if self.bvh.nodes[child + 1].aabb.intersects_sphere(position, radius) {
+                    self.iter_stack.push(child + 1);
+                }
             }
         }
+
+        State::Done
     }
 }
 
-enum State {
+enum State<'a> {
     FindIntersecting,
-    YieldLeaves(usize, usize),
+    YieldLeaves(SliceIter<'a, u32>),
     Done,
 }
 
@@ -230,18 +234,18 @@ impl<'a, 'b> Iterator for SphereIntersectIter<'a, 'b> {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
+            let next_state;
             match self.state {
-                State::YieldLeaves(start, end) => {
-                    if start < end {
-                        self.state = State::YieldLeaves(start + 1, end);
-                        return Some(self.bvh.leaves[start] as usize);
-                    } else {
-                        self.state = State::FindIntersecting;
+                State::YieldLeaves(ref mut iter) => {
+                    match iter.next() {
+                        Some(&index) => return Some(index as usize),
+                        None => next_state = State::FindIntersecting,
                     }
                 }
-                State::FindIntersecting => self.state = self.find_intersecting(),
+                State::FindIntersecting => next_state = self.find_intersecting(),
                 State::Done => return None,
             }
+            self.state = next_state;
         }
     }
 }

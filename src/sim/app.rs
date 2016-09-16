@@ -66,7 +66,7 @@ impl App {
                                                Gesture::KeyTrigger(Scancode::Escape)]);
         let explode_gesture = Gesture::KeyHold(Scancode::E);
 
-        let num_spheres = 30000;
+        let num_spheres = 40000;
         let mut rng = rand::ChaChaRng::new_unseeded();
         for _ in 0..num_spheres {
             let position = Vec3f::new((rng.gen::<f32>() - 0.5) * 2.0 * 5.0,
