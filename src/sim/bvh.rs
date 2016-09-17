@@ -83,7 +83,7 @@ impl Bvh {
 
 const INVALID_ID: u32 = 0xff_ff_ff_ff;
 const MAX_CAPACITY: u32 = INVALID_ID;
-const MIN_LEAVES: usize = 4;
+const MIN_LEAVES: usize = 6;
 
 #[derive(Clone, Debug)]
 struct Node {
@@ -127,7 +127,7 @@ fn expand_node(node: &mut Node,
 
     let mut split = 0;
     for i_leaf in 0..len {
-        if bbs[i_leaf].centroid()[longest_axis] <= limit {
+        if bbs[i_leaf].centroid()[longest_axis] < limit {
             bbs.swap(split, i_leaf);
             leaves.swap(split, i_leaf);
             split += 1;
@@ -300,8 +300,8 @@ impl Bins {
     fn create(binning_const: f32, min_limit: f32, axis: usize, bbs: &[Aabb]) -> Self {
         let mut bins = Bins::identity();
         for bb in bbs {
-            let bin_index =
-                (binning_const * ((bb.min()[axis] + bb.max()[axis]) * 0.5 - min_limit)) as usize;
+            let centroid = bb.centroid()[axis];
+            let bin_index = (binning_const * (centroid - min_limit)) as usize;
             bins.counts[bin_index] += 1;
             bins.bbs[bin_index].add_aabb(bb);
         }
@@ -317,7 +317,11 @@ fn binned_sah_limit(axis: usize, aabb: &Aabb, bbs: &[Aabb]) -> Option<(f32, Aabb
     let min_limit = aabb.min()[axis];
     let max_limit = aabb.max()[axis];
 
-    let binning_const = (NUM_BINS - 1) as f32 * (1.0 - 1e-5) / (max_limit - min_limit);
+    if max_limit - min_limit <= 1e-5 {
+        return None;
+    }
+
+    let binning_const = NUM_BINS as f32 * (1.0 - 1e-5) / (max_limit - min_limit);
     let bins = if len < CHUNK_SIZE * 2 {
         bbs.par_chunks(CHUNK_SIZE)
             .weight_max()
@@ -327,8 +331,8 @@ fn binned_sah_limit(axis: usize, aabb: &Aabb, bbs: &[Aabb]) -> Option<(f32, Aabb
         Bins::create(binning_const, min_limit, axis, bbs)
     };
 
-    let mut left_bbs = [Aabb::negative(); NUM_BINS];
-    let mut left_costs = [0.0; NUM_BINS];
+    let mut left_bbs = [Aabb::negative(); NUM_BINS - 1];
+    let mut left_costs = [0.0; NUM_BINS - 1];
     let mut left_bb = Aabb::negative();
     let mut left_count = 0;
     for bin_index in 0..NUM_BINS - 1 {
@@ -358,7 +362,7 @@ fn binned_sah_limit(axis: usize, aabb: &Aabb, bbs: &[Aabb]) -> Option<(f32, Aabb
     if best_bin_cost >= len as f32 * aabb.area() {
         None
     } else {
-        Some(((best_bin_index + 1) as f32 / binning_const + min_limit,
+        Some(((best_bin_index as f32 + 1.0) / binning_const + min_limit,
               left_bbs[best_bin_index],
               best_right_bb))
     }
