@@ -60,7 +60,7 @@ impl App {
         let world_mesh_id = try!(mesh_renderer.add(&window, &world_mesh)
             .chain_err(|| "Could not create world mesh."));
 
-        let simulation = Simulation::with_capacity(&mut timers, 16384);
+        let simulation = Simulation::with_capacity(&mut timers, 16384, world_mesh);
 
         Ok(App {
             window: window,
@@ -86,7 +86,7 @@ impl App {
                                                Gesture::KeyTrigger(Scancode::Escape)]);
         let explode_gesture = Gesture::KeyHold(Scancode::E);
 
-        let num_spheres = 20000;
+        let num_spheres = 10000;
         let mut rng = rand::ChaChaRng::new_unseeded();
         for _ in 0..num_spheres {
             let position = Vec3f::new((rng.gen::<f32>() - 0.5) * 2.0 * 5.0,
@@ -99,7 +99,7 @@ impl App {
                 position: position,
                 velocity: velocity,
                 mass: 1.0,
-                radius: 0.1,
+                radius: 0.2,
                 colour: Vec3f::new(rng.gen::<f32>(), rng.gen::<f32>(), rng.gen::<f32>()) * 0.7 +
                         Vec3f::new(0.2, 0.2, 0.2),
             });
@@ -128,16 +128,16 @@ impl App {
                                 colours: self.simulation.colours(),
                             })
                     .chain_err(|| "Failed to render spheres."));
-                // try!(self.mesh_renderer
-                //    .render(&self.window,
-                //            &self.camera,
-                //            &mut frame,
-                //            MeshList {
-                //                ids: &meshes,
-                //                colours: &colours,
-                //                transforms: &transforms,
-                //            })
-                //    .chain_err(|| "Failed to render meshes."));
+                try!(self.mesh_renderer
+                    .render(&self.window,
+                            &self.camera,
+                            &mut frame,
+                            MeshList {
+                                ids: &meshes,
+                                colours: &colours,
+                                transforms: &transforms,
+                            })
+                    .chain_err(|| "Failed to render meshes."));
                 self.timers.stop(self.render_timer);
 
                 if self.input.poll_gesture(&quit_gesture) {

@@ -6,11 +6,18 @@ use super::bvh::Bvh;
 use super::frame_timers::{FrameTimers, FrameTimerId};
 use rayon::prelude::*;
 use std::cell::RefCell;
+use super::mesh_renderer::Mesh;
 
 const DRAG_COEFFICIENT: f32 = 1.0;
-const COMPRESS: f32 = 10000.0;
-const EXPLODE: f32 = 5000.0;
+const COMPRESS: f32 = 1000.0;
+const EXPLODE: f32 = 500.0;
 const GRAVITY: f32 = 20.0;
+
+struct Triangle {
+    normal: Vec3f,
+    intercept: f32,
+    vertices: [Vec3f; 3],
+}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct EntityId(Id<ComponentIndexes>);
@@ -21,7 +28,11 @@ pub struct Simulation {
     bvh_timer: FrameTimerId,
     forces_timer: FrameTimerId,
 
-    bvh: Bvh,
+    sphere_bvh: Bvh,
+
+    world_mesh: Mesh,
+    world_bvh: Bvh,
+    world_triangles: Vec<Triangle>,
 
     timestep: f32,
     colours: Vec<Vec3f>,
@@ -50,11 +61,41 @@ struct ComponentIndexes {
 
 
 impl Simulation {
-    pub fn with_capacity(frame_timers: &mut FrameTimers, capacity: u32) -> Self {
+    pub fn with_capacity(frame_timers: &mut FrameTimers, capacity: u32, world_mesh: Mesh) -> Self {
         let capacity = capacity as usize;
+
+        let mut world_triangles = Vec::with_capacity(world_mesh.triangles.len());
+        let world_bvh = {
+            let mut bvh = Bvh::new();
+            bvh.rebuild(world_mesh.triangles.iter().map(|triangle| {
+                Aabb::of_points(&[world_mesh.vertices[triangle[0] as usize].position,
+                                  world_mesh.vertices[triangle[1] as usize].position,
+                                  world_mesh.vertices[triangle[2] as usize].position])
+            }));
+            bvh
+        };
+
+        world_triangles.extend(world_mesh.triangles.iter().map(|triangle| {
+            let vertices = [world_mesh.vertices[triangle[0] as usize].position,
+                            world_mesh.vertices[triangle[1] as usize].position,
+                            world_mesh.vertices[triangle[2] as usize].position];
+            let edges = [vertices[1] - vertices[0], vertices[2] - vertices[0]];
+            let normal = edges[0].cross(edges[1]).normalized();
+            let intercept = -normal.dot(&vertices[0]);
+            Triangle {
+                normal: normal,
+                intercept: intercept,
+                vertices: vertices,
+            }
+        }));
+
         Simulation {
             entities: IdVec::with_capacity(capacity),
-            bvh: Bvh::new(),
+            sphere_bvh: Bvh::new(),
+
+            world_mesh: world_mesh,
+            world_bvh: world_bvh,
+            world_triangles: world_triangles,
 
             bvh_timer: frame_timers.new_stopped("sim.bvh"),
             forces_timer: frame_timers.new_stopped("sim.frc"),
@@ -149,7 +190,7 @@ impl Simulation {
     }
 
     pub fn update_bvh(&mut self) {
-        self.bvh
+        self.sphere_bvh
             .rebuild(self.positions
                 .iter()
                 .zip(self.radii.iter())
@@ -168,18 +209,15 @@ impl Simulation {
     fn compute_forces(&mut self) {
         let len = self.len();
         let forces = &mut self.forces[..];
+        let world_triangles = &self.world_triangles[..];
         let positions = &self.positions[..];
         let velocities = &self.velocities[..];
         let radii = &self.radii[..];
-        let bvh = &self.bvh;
+        let sphere_bvh = &self.sphere_bvh;
+        let world_bvh = &self.world_bvh;
         let explode = self.explode;
         let timestep = self.timestep;
 
-        let planes = [Vec4f::new(1.0, 0.0, 0.0, 5.0),
-                      Vec4f::new(-1.0, 0.0, 0.0, 5.0),
-                      Vec4f::new(0.0, 0.0, 1.0, 5.0),
-                      Vec4f::new(0.0, 0.0, -1.0, 5.0),
-                      Vec4f::new(0.0, 1.0, 0.0, 0.0)];
 
         assert!(forces.len() == len);
         assert!(positions.len() == len);
@@ -197,19 +235,6 @@ impl Simulation {
                 *force -= velocity * drag;
                 *force += Vec3f::new(0.0, -GRAVITY, 0.0);
 
-                for plane in &planes {
-                    let plane_distance = plane.xyz().dot(&position) + plane[3];
-                    let distance_difference = plane_distance - radius;
-                    if distance_difference < 0.0 {
-                        let normal_dot = velocity.dot(&plane.xyz());
-                        if normal_dot < 0.0 {
-                            let normal_dot = normal_dot.max(-0.5 / (timestep * 0.5));
-                            *force += velocity * normal_dot * 1.0;
-                        }
-                        *force += plane.xyz() * (-distance_difference * COMPRESS);
-                    }
-                }
-
                 if explode {
                     let direction = position - Vec3f::new(-5.0, 2.0, 5.0);
                     let distance_squared = direction.squared_norm().max(1.0);
@@ -223,7 +248,70 @@ impl Simulation {
                 };
                 THREAD_INTERSECTION_STACK.with(|intersection_stack| {
                     let mut intersection_stack = intersection_stack.borrow_mut();
-                    for j_body in bvh.intersect_sphere(&mut intersection_stack, position, radius) {
+
+                    for triangle_index in
+                        world_bvh.intersect_sphere(&mut intersection_stack, position, radius) {
+                        let Triangle { mut normal, intercept, ref vertices } =
+                            world_triangles[triangle_index];
+
+                        let mut min_distance = radius;
+                        let mut contact_normal = None;
+
+                        // Sphere against plane.
+                        let signed_plane_distance = normal.dot(&position) + intercept;
+                        let plane_distance = signed_plane_distance.abs();
+                        if plane_distance >= radius {
+                            continue;
+                        }
+                        let centre_on_plane = position - normal * signed_plane_distance;
+                        if is_point_inside_triangle(vertices, &centre_on_plane) {
+                            min_distance = plane_distance;
+                            contact_normal = Some(normal);
+                        }
+
+                        // Sphere against vertices.
+                        for vertex in vertices {
+                            let to_centre = position - *vertex;
+                            let distance_squared = to_centre.squared_norm();
+                            if distance_squared < min_distance * min_distance {
+                                let distance = distance_squared.sqrt();
+                                min_distance = distance;
+                                contact_normal = Some(normal * 0.125);
+                            }
+                        }
+
+                        // Sphere against edges.
+                        for (&v1, &v2) in vertices.iter()
+                            .zip(vertices.iter().skip(1).chain(Some(&vertices[0]))) {
+                            let edge = v2 - v1;
+                            let on_edge = (position - v1).dot(&edge) / edge.dot(&edge);
+                            if on_edge <= 0.0 || on_edge >= 1.0 {
+                                continue;
+                            }
+                            let projection = v1 + edge * on_edge;
+                            let edge_normal = position - projection;
+                            let edge_distance_squared = edge_normal.squared_norm();
+
+                            if edge_distance_squared < min_distance * min_distance {
+                                min_distance = edge_distance_squared.sqrt();
+                                contact_normal = Some(normal * 0.25);
+                            }
+                        }
+
+                        // Apply force.
+                        if let Some(contact_normal) = contact_normal {
+                            let velocity_along_normal = velocity.dot(&contact_normal);
+                            if velocity_along_normal < 0.0 {
+                                *force -= contact_normal * (1.2 * velocity_along_normal) /
+                                          (timestep * 0.5);
+                            }
+                            // *force += contact_normal * (radius - min_distance) * COMPRESS;
+                        } else {
+                        }
+                    }
+
+                    for j_body in
+                        sphere_bvh.intersect_sphere(&mut intersection_stack, position, radius) {
                         if j_body == i_body {
                             continue;
                         }
@@ -324,4 +412,40 @@ impl Simulation {
 
 fn deborrow<T>(value: T) -> T {
     value
+}
+
+
+fn intersect_sphere_line(center: &Vec3f, radius: f32, p1: &Vec3f, p2: &Vec3f) -> Option<f32> {
+    let edge = *p2 - *p1;
+    let a = edge.squared_norm();
+    let b = 2.0 * edge.dot(&(*p1 - *center));
+    let c = center.squared_norm() + p1.squared_norm() - 2.0 * center.dot(p1) - radius * radius;
+    lowest_quadratic_root(a, b, c)
+}
+
+fn lowest_quadratic_root(a: f32, b: f32, c: f32) -> Option<f32> {
+    let i = b * b - 4.0 * a * c;
+    if i < 0.0 {
+        None
+    } else {
+        let i = i.sqrt();
+        let a2 = 2.0 * a;
+        let i1 = (-b + i) / a2;
+        let i2 = (-b - i) / a2;
+        if i1 < i2 { Some(i1) } else { Some(i2) }
+    }
+}
+
+fn is_point_inside_triangle(verts: &[Vec3f; 3], point: &Vec3f) -> bool {
+    let u = verts[1] - verts[0];
+    let v = verts[2] - verts[0];
+    let n = u.cross(v);
+    let w = *point - verts[0];
+    let n2 = n.squared_norm();
+
+    let gamma = u.cross(w).dot(&n) / n2;
+    let beta = w.cross(v).dot(&n) / n2;
+    let alpha = 1.0 - gamma - beta;
+
+    0.0 <= alpha && alpha <= 1.0 && 0.0 <= gamma && gamma <= 1.0 && 0.0 <= beta && beta <= 1.0
 }
