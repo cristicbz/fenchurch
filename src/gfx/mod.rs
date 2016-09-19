@@ -10,6 +10,7 @@ pub use self::errors::{SdlError, Error};
 
 use glium::uniforms::{AsUniformValue, UniformValue};
 use glium::texture::{ClientFormat, PixelValue};
+use glium::vertex::{Attribute, AttributeType};
 use math::{Vec2f, Vec3f, Vec4f, Mat4};
 
 
@@ -52,5 +53,23 @@ unsafe impl PixelValue for Vec3f {
 unsafe impl PixelValue for Vec4f {
     fn get_format() -> ClientFormat {
         ClientFormat::F32F32F32F32
+    }
+}
+
+unsafe impl Attribute for Vec2f {
+    fn get_type() -> AttributeType {
+        AttributeType::F32F32
+    }
+}
+
+unsafe impl Attribute for Vec3f {
+    fn get_type() -> AttributeType {
+        AttributeType::F32F32F32
+    }
+}
+
+unsafe impl Attribute for Vec4f {
+    fn get_type() -> AttributeType {
+        AttributeType::F32F32F32F32
     }
 }

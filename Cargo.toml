@@ -12,6 +12,7 @@ num = "0.1.35"
 rand = "0.3.14"
 rayon = "0.4.2"
 sdl2 = "0.22.0"
+sdl2_image = "0.22.0"
 time = "0.1.35"
 
 [dependencies.clap]

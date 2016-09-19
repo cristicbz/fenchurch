@@ -1,16 +1,21 @@
 use gfx::{Window, WindowOptions, Camera, Input, Gesture, Scancode};
-use math::Vec3f;
+use math::{Vec3f, Mat4};
+use rand::{self, Rng};
 use super::controller::{Controller, ControllerBindings};
 use super::errors::{Result, ChainErr};
 use super::frame_timers::{FrameTimers, FrameTimerId};
-use super::sphere_renderer::{SphereRenderer, SphereList};
+use super::mesh_renderer::{MeshRenderer, MeshId, MeshList};
 use super::simulation::{Simulation, NewEntity};
-use rand::{self, Rng};
+use super::sphere_renderer::{SphereRenderer, SphereList};
+use super::heightmap;
+use num::Zero;
+
 
 pub struct App {
     window: Window,
     input: Input,
-    renderer: SphereRenderer,
+    sphere_renderer: SphereRenderer,
+    mesh_renderer: MeshRenderer,
     camera: Camera,
     controller: Controller,
     timers: FrameTimers,
@@ -21,6 +26,8 @@ pub struct App {
     cpu_timer: FrameTimerId,
     render_timer: FrameTimerId,
     sim_timer: FrameTimerId,
+
+    world_mesh_id: MeshId,
 }
 
 impl App {
@@ -33,8 +40,10 @@ impl App {
                 ..Default::default()
             })
             .chain_err(|| "Failed to create window,"));
-        let renderer = try!(SphereRenderer::new(&window, Default::default())
-            .chain_err(|| "Failed to create renderer."));
+        let sphere_renderer = try!(SphereRenderer::new(&window, Default::default())
+            .chain_err(|| "Failed to create SphereRenderer."));
+        let mut mesh_renderer = try!(MeshRenderer::new(&window, Default::default())
+            .chain_err(|| "Failed to create MeshRenderer."));
         let input = try!(Input::new(&window).chain_err(|| "Failed to create input."));
         let mut camera = Camera::new(75.0, window.aspect_ratio(), 0.1, 100.0);
         let mut timers = FrameTimers::new();
@@ -42,11 +51,21 @@ impl App {
         camera.set_yaw(-0.5519);
         camera.set_pitch(0.2919);
 
+
+        let world_mesh = try!(heightmap::read_heightmap("/home/ccc/seafloor.jpg",
+                                                        Vec3f::zero(),
+                                                        Vec3f::new(40.0, 15.0, 40.0),
+                                                        1.0)
+            .chain_err(|| "Failed to load height map."));
+        let world_mesh_id = try!(mesh_renderer.add(&window, &world_mesh)
+            .chain_err(|| "Could not create world mesh."));
+
         let simulation = Simulation::with_capacity(&mut timers, 16384);
 
         Ok(App {
             window: window,
-            renderer: renderer,
+            sphere_renderer: sphere_renderer,
+            mesh_renderer: mesh_renderer,
             input: input,
             camera: camera,
             controller: Controller::new(ControllerBindings::default()),
@@ -57,6 +76,7 @@ impl App {
             sim_timer: timers.new_stopped("sim"),
             timers: timers,
 
+            world_mesh_id: world_mesh_id,
             simulation: simulation,
         })
     }
@@ -66,11 +86,11 @@ impl App {
                                                Gesture::KeyTrigger(Scancode::Escape)]);
         let explode_gesture = Gesture::KeyHold(Scancode::E);
 
-        let num_spheres = 40000;
+        let num_spheres = 20000;
         let mut rng = rand::ChaChaRng::new_unseeded();
         for _ in 0..num_spheres {
             let position = Vec3f::new((rng.gen::<f32>() - 0.5) * 2.0 * 5.0,
-                                      (rng.gen::<f32>() - 0.5) * 2.0 * 5.0 + 10.0,
+                                      (rng.gen::<f32>() - 0.5) * 2.0 * 5.0 + 20.0,
                                       (rng.gen::<f32>() - 0.5) * 2.0 * 5.0);
             let velocity = Vec3f::new((rng.gen::<f32>() - 0.5) * 10. + 10.0,
                                       (rng.gen::<f32>() - 0.5) * 10. - 5.0,
@@ -84,6 +104,9 @@ impl App {
                         Vec3f::new(0.2, 0.2, 0.2),
             });
         }
+        let meshes = [self.world_mesh_id];
+        let colours = [Vec3f::new(0.0, 0.3, 0.4)];
+        let transforms = [Mat4::identity()];
 
         info!("Entering main loop...");
         let mut running = true;
@@ -95,7 +118,7 @@ impl App {
                 self.input.update();
 
                 self.timers.start(self.render_timer);
-                try!(self.renderer
+                try!(self.sphere_renderer
                     .render(&self.window,
                             &self.camera,
                             &mut frame,
@@ -104,7 +127,17 @@ impl App {
                                 radii: self.simulation.radii(),
                                 colours: self.simulation.colours(),
                             })
-                    .chain_err(|| "Failed to render frame."));
+                    .chain_err(|| "Failed to render spheres."));
+                // try!(self.mesh_renderer
+                //    .render(&self.window,
+                //            &self.camera,
+                //            &mut frame,
+                //            MeshList {
+                //                ids: &meshes,
+                //                colours: &colours,
+                //                transforms: &transforms,
+                //            })
+                //    .chain_err(|| "Failed to render meshes."));
                 self.timers.stop(self.render_timer);
 
                 if self.input.poll_gesture(&quit_gesture) {
@@ -118,6 +151,7 @@ impl App {
                 self.timers.start(self.sim_timer);
                 self.simulation.update(&mut self.timers, delta_time);
                 self.timers.stop(self.sim_timer);
+
 
                 self.timers.stop(self.cpu_timer);
                 Ok(())

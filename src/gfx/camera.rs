@@ -37,7 +37,7 @@ impl Camera {
             far: far, // Whereeeever you are.
             projection: Mat4::new_perspective(fov, aspect_ratio, near, far),
 
-            modelview: Cell::new(Mat4::new_identity()),
+            modelview: Cell::new(Mat4::identity()),
             dirty: Cell::new(true),
         }
     }

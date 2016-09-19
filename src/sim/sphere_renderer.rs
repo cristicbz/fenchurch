@@ -1,13 +1,12 @@
-use gfx::{Window, Camera, GLSL_VERSION_STRING};
+use gfx::{Window, Camera};
 use glium::index::{PrimitiveType, NoIndices};
-use glium::program::ProgramCreationInput;
 use glium::{Program, Frame, Surface, DrawParameters, BackfaceCullingMode, Depth, DepthTest};
 use glium::texture::{Texture1d, UncompressedFloatFormat, MipmapsOption};
 use glium::uniforms::{SamplerWrapFunction, MagnifySamplerFilter, MinifySamplerFilter};
 use glium::vertex::EmptyVertexAttributes;
 use math::{Vec3f, Vector};
 use super::errors::{Result, ChainErr};
-use super::utils::read_utf8_file;
+use super::lights::Lights;
 use std::u32;
 
 pub struct SphereList<'a> {
@@ -22,35 +21,15 @@ pub struct SphereRenderer {
     settings: Settings,
 }
 
-pub struct Light {
-    direction: Vec3f,
-    colour: Vec3f,
-}
-
 pub struct Settings {
-    pub key_light: Light,
-    pub fill_light: Light,
-    pub back_light: Light,
-    pub ambient: Vec3f,
+    pub lights: Lights,
     pub chunk_size: usize,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            key_light: Light {
-                direction: Vec3f::new(0.0, 1.0, 1.0),
-                colour: Vec3f::new(1.0, 1.0, 1.0) * 1.0,
-            },
-            fill_light: Light {
-                direction: Vec3f::new(1.0, 1.0, 0.0),
-                colour: Vec3f::new(1.0, 0.8, 0.7) * 0.4,
-            },
-            back_light: Light {
-                direction: Vec3f::new(-1.0, -1.0, 0.0),
-                colour: Vec3f::new(0.7, 0.8, 1.0) * 0.1,
-            },
-            ambient: Vec3f::new(0.2, 1.0, 1.0) * 0.05,
+            lights: Lights::default(),
             chunk_size: 1024,
         }
     }
@@ -60,29 +39,8 @@ impl SphereRenderer {
     pub fn new(window: &Window, settings: Settings) -> Result<Self> {
         assert!(settings.chunk_size > 1);
 
-        let program = try!(Program::new(window.facade(),
-                                        ProgramCreationInput::SourceCode {
-                                            vertex_shader: &format!("#version {}\n{}",
-                                                          GLSL_VERSION_STRING,
-                                                          try!(read_utf8_file(VERTEX_SHADER)
-                                                              .chain_err(|| {
-                                                                  "Failed to read vertex shader."
-                                                              }))),
-                                            tessellation_control_shader: None,
-                                            tessellation_evaluation_shader: None,
-                                            geometry_shader: None,
-                                            fragment_shader: &format!("#version {}\n{}",
-                                                            GLSL_VERSION_STRING,
-                                                            try!(read_utf8_file(FRAGMENT_SHADER)
-                                                                .chain_err(|| {
-                                                                    "Failed to read fragment \
-                                                                     shader."
-                                                                }))),
-                                            transform_feedback_varyings: None,
-                                            outputs_srgb: false,
-                                            uses_point_size: false,
-                                        })
-            .chain_err(|| "Failed to build program."));
+        let program = try!(window.program(VERTEX_SHADER, FRAGMENT_SHADER)
+            .chain_err(|| "Failed to build SphereRenderer program."));
 
         Ok(SphereRenderer {
             program: program,
@@ -127,13 +85,7 @@ impl SphereRenderer {
 
         let modelview = camera.modelview();
         let projection = camera.projection();
-
-        let key_light_direction =
-            modelview.transform_direction(&self.settings.key_light.direction).xyz().normalized();
-        let fill_light_direction =
-            modelview.transform_direction(&self.settings.fill_light.direction).xyz().normalized();
-        let back_light_direction =
-            modelview.transform_direction(&self.settings.back_light.direction).xyz().normalized();
+        let transformed_lights = self.settings.lights.transformed(&modelview);
 
         for chunk in chunks {
             let positions = try!(Texture1d::with_format(window.facade(),
@@ -155,13 +107,13 @@ impl SphereRenderer {
             let uniforms = uniform! {
                 u_modelview: &modelview,
                 u_projection: projection,
-                u_key_light_direction: &key_light_direction,
-                u_key_light_colour: &self.settings.key_light.colour,
-                u_fill_light_direction: &fill_light_direction,
-                u_fill_light_colour: &self.settings.fill_light.colour,
-                u_back_light_direction: &back_light_direction,
-                u_back_light_colour: &self.settings.back_light.colour,
-                u_ambient_colour: &self.settings.ambient,
+                u_key_light_direction: &transformed_lights.key.direction,
+                u_key_light_colour: &transformed_lights.key.colour,
+                u_fill_light_direction: &transformed_lights.fill.direction,
+                u_fill_light_colour: &transformed_lights.fill.colour,
+                u_back_light_direction: &transformed_lights.back.direction,
+                u_back_light_colour: &transformed_lights.back.colour,
+                u_ambient_colour: &transformed_lights.ambient,
                 u_positions: positions.sampled()
                                       .magnify_filter(MagnifySamplerFilter::Nearest)
                                       .minify_filter(MinifySamplerFilter::Nearest)

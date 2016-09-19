@@ -1,10 +1,13 @@
 use glium::{Frame, Surface};
+use glium::Program;
 use glium_sdl2::{DisplayBuild, SDL2Facade};
 use sdl2;
+use sdl2_image::{self, INIT_PNG, INIT_JPG, Sdl2ImageContext};
 use sdl2::Sdl;
 use sdl2::video::GLProfile;
 use std::borrow::Cow;
-use super::errors::*;
+use super::errors::{Result, ChainErr, SdlError};
+use utils::read_utf8_file;
 
 #[cfg(target_os = "linux")]
 mod internal {
@@ -32,6 +35,7 @@ pub struct Options<'a> {
 
 pub struct Window {
     sdl: Sdl,
+    _sdl_image: Sdl2ImageContext,
     facade: SDL2Facade,
     width: u32,
     height: u32,
@@ -54,10 +58,13 @@ impl Window {
     pub fn new<'a>(options: Options) -> Result<Window> {
         let Options { title, width, height, depth, background } = options;
 
-        let sdl = try!(sdl2::init().map_err(SdlError).chain_err(|| "Sdl init failed."));
+        let sdl = try!(sdl2::init().map_err(SdlError).chain_err(|| "SDL2 init failed."));
         let video = try!(sdl.video()
             .map_err(SdlError)
-            .chain_err(|| "Sdl video init failed."));
+            .chain_err(|| "SDL2 video init failed."));
+        let sdl_image = try!(sdl2_image::init(INIT_PNG | INIT_JPG)
+            .map_err(SdlError)
+            .chain_err(|| "SDL2_image init failed."));
         let gl_attr = video.gl_attr();
         gl_attr.set_context_profile(GLProfile::Core);
         gl_attr.set_context_major_version(GL_MAJOR_VERSION);
@@ -75,6 +82,7 @@ impl Window {
         sdl2::clear_error();
         Ok(Window {
             sdl: sdl,
+            _sdl_image: sdl_image,
             facade: facade,
             width: width,
             height: height,
@@ -106,5 +114,19 @@ impl Window {
 
     pub fn facade(&self) -> &SDL2Facade {
         &self.facade
+    }
+
+    pub fn program(&self, vertex_src: &str, fragment_src: &str) -> Result<Program> {
+        Program::from_source(&self.facade,
+                             &format!("#version {}\n{}",
+                                      GLSL_VERSION_STRING,
+                                      try!(read_utf8_file(vertex_src)
+                                          .chain_err(|| "Failed to read vertex shader."))),
+                             &format!("#version {}\n{}",
+                                      GLSL_VERSION_STRING,
+                                      try!(read_utf8_file(fragment_src)
+                                          .chain_err(|| "Failed to read fragment shader."))),
+                             None)
+            .chain_err(|| "Failed to build program.")
     }
 }

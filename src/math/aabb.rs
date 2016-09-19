@@ -26,6 +26,22 @@ impl Aabb {
         }
     }
 
+    pub fn of_points(points: &[Vec3f]) -> Self {
+        let mut aabb = Aabb::negative();
+        for point in points {
+            for axis in 0..3 {
+                if point[axis] < aabb.min[axis] {
+                    aabb.min[axis] = point[axis];
+                }
+
+                if point[axis] > aabb.max[axis] {
+                    aabb.max[axis] = point[axis];
+                }
+            }
+        }
+        aabb
+    }
+
     #[inline]
     pub fn union(bbs: &[Aabb]) -> Self {
         bbs.iter()

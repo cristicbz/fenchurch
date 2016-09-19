@@ -317,11 +317,11 @@ fn binned_sah_limit(axis: usize, aabb: &Aabb, bbs: &[Aabb]) -> Option<(f32, Aabb
     let min_limit = aabb.min()[axis];
     let max_limit = aabb.max()[axis];
 
-    if max_limit - min_limit <= 1e-5 {
+    if max_limit - min_limit <= 1e-3 {
         return None;
     }
 
-    let binning_const = NUM_BINS as f32 * (1.0 - 1e-5) / (max_limit - min_limit);
+    let binning_const = NUM_BINS as f32 * (1.0 - 1e-3) / (max_limit - min_limit);
     let bins = if len < CHUNK_SIZE * 2 {
         bbs.par_chunks(CHUNK_SIZE)
             .weight_max()

@@ -264,6 +264,15 @@ impl<Scalar: Field> Mul<Scalar> for Vec3<Scalar> {
     }
 }
 
+impl<Scalar: Field> Mul<Vec3<Scalar>> for Vec3<Scalar> {
+    type Output = Self;
+
+    #[inline]
+    fn mul(self, rhs: Vec3<Scalar>) -> Self {
+        Vec3([self[0] * rhs[0], self[1] * rhs[1], self[2] * rhs[2]])
+    }
+}
+
 impl<Scalar: Field> Div<Scalar> for Vec3<Scalar> {
     type Output = Self;
 

@@ -1,7 +1,8 @@
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
-use super::errors::{Result, ChainErr};
+
+error_chain!{}
 
 pub fn read_utf8_file<P: AsRef<Path>>(path: P) -> Result<String> {
     let path = path.as_ref();
