@@ -19,7 +19,8 @@ impl Sphere {
                           triangle: &[Vec3f; 3],
                           normal: &Vec3f,
                           intercept: f32,
-                          vel: &Vec3f)
+                          vel: &Vec3f,
+                          speed: f32)
                           -> Option<ContactInfo> {
         let Sphere { ref center, radius } = *self;
         let speed = vel.norm();
@@ -58,7 +59,7 @@ impl Sphere {
             if let Some(d) = intersect_sphere_line(center, radius, vertex, &(*vertex - nvel)) {
                 if d >= 0.0 && d < min_distance {
                     min_distance = d;
-                    contact_normal = *center - (*vertex - nvel * d);
+                    contact_normal = (*center - (*vertex - nvel * d)).normalized();
                     collision = true;
                 }
             }
@@ -67,7 +68,10 @@ impl Sphere {
         // Sphere against edges.
         for (&e1, &e2) in triangle.iter().zip(triangle.iter().skip(1).chain(Some(&triangle[0]))) {
             let edge = e2 - e1;
-            let edge_normal = nvel.cross(edge).normalized();
+            let edge_squared_norm = edge.squared_norm();
+            let edge_norm = edge_squared_norm.sqrt();
+
+            let edge_normal = nvel.cross(edge) / edge_norm;
             let edge_intercept = -edge_normal.dot(&e1);
             let edge_distance = edge_normal.dot(center) + edge_intercept;
             if edge_distance.abs() > radius {
@@ -77,7 +81,7 @@ impl Sphere {
             let circle_radius = (radius * radius - edge_distance * edge_distance).sqrt();
             let circle_center = *center - edge_normal * edge_distance;
             let e1_to_circle_center = circle_center - e1;
-            let disp = edge * (e1_to_circle_center.dot(&edge) / edge.squared_norm());
+            let disp = edge * (e1_to_circle_center.dot(&edge) / edge_squared_norm);
             let on_line = e1 + disp;
             let circle_center_to_on_line = (on_line - circle_center).normalized();
             let candidate = circle_center_to_on_line * circle_radius + circle_center;
@@ -108,13 +112,13 @@ impl Sphere {
                 continue;
             }
             min_distance = t;
-            contact_normal = *center - candidate;
+            contact_normal = (*center - candidate).normalized();
             collision = true;
         }
 
         if collision {
             Some(ContactInfo {
-                normal: contact_normal.normalized(),
+                normal: contact_normal,
                 time: min_distance / speed,
             })
         } else {
@@ -129,19 +133,12 @@ fn intersect_sphere_line(center: &Vec3f, radius: f32, p1: &Vec3f, p2: &Vec3f) ->
     let a = edge.squared_norm();
     let b = 2.0 * edge.dot(&(*p1 - *center));
     let c = center.squared_norm() + p1.squared_norm() - 2.0 * center.dot(p1) - radius * radius;
-    lowest_quadratic_root(a, b, c)
-}
-
-fn lowest_quadratic_root(a: f32, b: f32, c: f32) -> Option<f32> {
     let i = b * b - 4.0 * a * c;
     if i < 0.0 {
         None
     } else {
-        let i = i.sqrt();
-        let a2 = 2.0 * a;
-        let i1 = (-b + i) / a2;
-        let i2 = (-b - i) / a2;
-        if i1 < i2 { Some(i1) } else { Some(i2) }
+        let i2 = (-b - i.sqrt()) / (2.0 * a);
+        Some(i2)
     }
 }
 

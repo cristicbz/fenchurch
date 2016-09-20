@@ -137,9 +137,9 @@ impl MeshRenderer {
         })))
     }
 
-    pub fn remove(&mut self, mesh: MeshId) -> bool {
-        self.meshes.remove(mesh.0).is_some()
-    }
+    // pub fn remove(&mut self, mesh: MeshId) -> bool {
+    //    self.meshes.remove(mesh.0).is_some()
+    // }
 
     pub fn render<'a>(&self,
                       _window: &Window,

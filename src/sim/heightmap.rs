@@ -11,59 +11,59 @@ use std::mem;
 
 const PIXEL_SIZE: usize = 4;
 
-pub fn read_heightmap<P: AsRef<Path>>(path: P,
-                                      centre: Vec3f,
-                                      size: Vec3f,
-                                      resolution: f32)
-                                      -> Result<Mesh> {
-    let Heightmap { data: heightmap, width, height } =
-        rescale_heightmap(try!(load_heightmap(path.as_ref())), resolution);
-
-    let mut vertices = Vec::new();
-    let mut triangles = Vec::new();
-    vertices.reserve(width * height);
-    triangles.reserve((width - 1) * (height - 1) * 2);
-
-    for y in 0..height {
-        for x in 0..width {
-            vertices.push(MeshVertex {
-                position: Vec3f::new(x as f32 / (width - 1) as f32 * 2.0 - 1.0,
-                                     heightmap[y * width + x],
-                                     y as f32 / (height - 1) as f32 * 2.0 - 1.0) *
-                          size + centre,
-                normal: Vec3f::zero(),
-            });
-        }
-    }
-
-    for y in 0..height as u32 - 1 {
-        for x in 0..width as u32 - 1 {
-            let top_left = y * width as u32 + x;
-            let top_right = top_left + 1;
-            let bottom_left = top_left + width as u32;
-            let bottom_right = bottom_left + 1;
-            if (x + y) % 2 == 0 {
-                triangles.push(Triangle([top_right, top_left, bottom_right]));
-                triangles.push(Triangle([bottom_right, top_left, bottom_left]));
-            } else {
-                triangles.push(Triangle([bottom_left, bottom_right, top_right]));
-                triangles.push(Triangle([top_right, top_left, bottom_left]));
-            }
-        }
-    }
-
-    let mut mesh = Mesh {
-        vertices: vertices,
-        triangles: triangles,
-    };
-    mesh.set_smooth_normals();
-    Ok(mesh)
-}
-
-struct Heightmap {
+pub struct Heightmap {
     width: usize,
     height: usize,
     data: Vec<f32>,
+}
+
+impl Heightmap {
+    pub fn read<P: AsRef<Path>>(path: P, resolution: f32) -> Result<Self> {
+        Ok(rescale_heightmap(try!(load_heightmap(path.as_ref())), resolution))
+    }
+
+    pub fn build_mesh(&self, centre: Vec3f, size: Vec3f) -> Mesh {
+        let Heightmap { width, height, ref data } = *self;
+        let mut vertices = Vec::new();
+        let mut triangles = Vec::new();
+        vertices.reserve(width * height);
+        triangles.reserve((width - 1) * (height - 1) * 2);
+
+        for y in 0..height {
+            for x in 0..width {
+                vertices.push(MeshVertex {
+                    position: Vec3f::new(x as f32 / (width - 1) as f32 * 2.0 - 1.0,
+                                         data[y * width + x],
+                                         y as f32 / (height - 1) as f32 * 2.0 - 1.0) *
+                              size + centre,
+                    normal: Vec3f::zero(),
+                });
+            }
+        }
+
+        for y in 0..height as u32 - 1 {
+            for x in 0..width as u32 - 1 {
+                let top_left = y * width as u32 + x;
+                let top_right = top_left + 1;
+                let bottom_left = top_left + width as u32;
+                let bottom_right = bottom_left + 1;
+                if (x + y) % 2 == 0 {
+                    triangles.push(Triangle([top_right, top_left, bottom_right]));
+                    triangles.push(Triangle([bottom_right, top_left, bottom_left]));
+                } else {
+                    triangles.push(Triangle([bottom_left, bottom_right, top_right]));
+                    triangles.push(Triangle([top_right, top_left, bottom_left]));
+                }
+            }
+        }
+
+        let mut mesh = Mesh {
+            vertices: vertices,
+            triangles: triangles,
+        };
+        mesh.set_smooth_normals();
+        mesh
+    }
 }
 
 fn load_heightmap(path: &Path) -> Result<Heightmap> {

@@ -4,19 +4,22 @@ use rayon::prelude::*;
 use std::f32;
 use super::atomic_mut_indexer::AtomicMutIndexer;
 use std::slice::Iter as SliceIter;
+use std::cmp;
 
 pub struct Bvh {
     nodes: Vec<Node>,
     leaves: Vec<u32>,
     bbs: Vec<Aabb>,
+    min_leaves: usize,
 }
 
 impl Bvh {
-    pub fn new() -> Self {
+    pub fn new(min_leaves: usize) -> Self {
         Bvh {
             nodes: Vec::new(),
             leaves: Vec::new(),
             bbs: Vec::new(),
+            min_leaves: min_leaves,
         }
     }
 
@@ -34,7 +37,7 @@ impl Bvh {
         }
         leaves.extend(0..num_bbs as u32);
 
-        if num_bbs < MIN_LEAVES {
+        if num_bbs < self.min_leaves {
             nodes.push(Node {
                 aabb: Aabb::union(&bbs[..]),
                 child: 0,
@@ -48,7 +51,13 @@ impl Bvh {
             let node_indexer = AtomicMutIndexer::new(nodes);
             let (root_index, root) = node_indexer.get().unwrap();
             assert_eq!(root_index, 0);
-            expand_node(root, &node_indexer, Aabb::union(&bbs[..]), bbs, leaves, 0);
+            expand_node(root,
+                        &node_indexer,
+                        Aabb::union(&bbs[..]),
+                        bbs,
+                        leaves,
+                        0,
+                        self.min_leaves);
             node_indexer.done()
         };
         nodes.truncate(num_nodes);
@@ -83,7 +92,6 @@ impl Bvh {
 
 const INVALID_ID: u32 = 0xff_ff_ff_ff;
 const MAX_CAPACITY: u32 = INVALID_ID;
-const MIN_LEAVES: usize = 6;
 
 #[derive(Clone, Debug)]
 struct Node {
@@ -107,13 +115,14 @@ fn expand_node(node: &mut Node,
                aabb: Aabb,
                bbs: &mut [Aabb],
                leaves: &mut [u32],
-               offset: u32) {
+               offset: u32,
+               min_leaves: usize) {
     let len = bbs.len();
-    assert!(len >= MIN_LEAVES);
+    assert!(len >= min_leaves);
     assert!(leaves.len() == len);
     let longest_axis = aabb.longest_axis();
     // let limit = median3_limit(longest_axis, bbs);
-    let (limit, left_bb, right_bb) = match binned_sah_limit(longest_axis, &aabb, bbs) {
+    let (limit, _, _) = match binned_sah_limit(longest_axis, &aabb, bbs) {
         Some(split) => split,
         None => {
             *node = Node {
@@ -140,7 +149,7 @@ fn expand_node(node: &mut Node,
     let (left_bbs, right_bbs) = bbs.split_at_mut(split);
     let (left_leaves, right_leaves) = leaves.split_at_mut(split);
 
-    // let (left_bb, right_bb) = (Aabb::union(&left_bbs), Aabb::union(&right_bbs));
+    let (left_bb, right_bb) = (Aabb::union(&left_bbs), Aabb::union(&right_bbs));
     let (index1, child1, child2) = node_indexer.get2().unwrap();
 
     *node = Node {
@@ -149,7 +158,7 @@ fn expand_node(node: &mut Node,
         leaf_end: INVALID_ID,
     };
 
-    if left_bbs.len() < MIN_LEAVES && right_bbs.len() < MIN_LEAVES {
+    if left_bbs.len() < min_leaves && right_bbs.len() < min_leaves {
         *child1 = Node {
             aabb: left_bb,
             child: offset,
@@ -160,7 +169,7 @@ fn expand_node(node: &mut Node,
             child: offset + split as u32,
             leaf_end: offset + len as u32,
         };
-    } else if left_bbs.len() < MIN_LEAVES {
+    } else if left_bbs.len() < min_leaves {
         *child1 = Node {
             aabb: left_bb,
             child: offset,
@@ -171,23 +180,39 @@ fn expand_node(node: &mut Node,
                     right_bb,
                     right_bbs,
                     right_leaves,
-                    offset + split as u32)
-    } else if right_bbs.len() < MIN_LEAVES {
+                    offset + split as u32,
+                    min_leaves)
+    } else if right_bbs.len() < min_leaves {
         *child2 = Node {
             aabb: right_bb,
             child: offset + split as u32,
             leaf_end: offset + len as u32,
         };
-        expand_node(child1, node_indexer, left_bb, left_bbs, left_leaves, offset);
+        expand_node(child1,
+                    node_indexer,
+                    left_bb,
+                    left_bbs,
+                    left_leaves,
+                    offset,
+                    min_leaves);
     } else {
-        rayon::join(|| expand_node(child1, node_indexer, left_bb, left_bbs, left_leaves, offset),
+        rayon::join(|| {
+            expand_node(child1,
+                        node_indexer,
+                        left_bb,
+                        left_bbs,
+                        left_leaves,
+                        offset,
+                        min_leaves)
+        },
                     || {
             expand_node(child2,
                         node_indexer,
                         right_bb,
                         right_bbs,
                         right_leaves,
-                        offset + split as u32)
+                        offset + split as u32,
+                        min_leaves)
         });
     }
 }
@@ -301,7 +326,8 @@ impl Bins {
         let mut bins = Bins::identity();
         for bb in bbs {
             let centroid = bb.centroid()[axis];
-            let bin_index = (binning_const * (centroid - min_limit)) as usize;
+            let bin_index = cmp::min((binning_const * (centroid - min_limit)) as usize,
+                                     NUM_BINS - 1);
             bins.counts[bin_index] += 1;
             bins.bbs[bin_index].add_aabb(bb);
         }
@@ -321,7 +347,7 @@ fn binned_sah_limit(axis: usize, aabb: &Aabb, bbs: &[Aabb]) -> Option<(f32, Aabb
         return None;
     }
 
-    let binning_const = NUM_BINS as f32 * (1.0 - 1e-3) / (max_limit - min_limit);
+    let binning_const = NUM_BINS as f32 / (max_limit - min_limit);
     let bins = if len < CHUNK_SIZE * 2 {
         bbs.par_chunks(CHUNK_SIZE)
             .weight_max()

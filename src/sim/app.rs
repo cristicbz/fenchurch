@@ -7,7 +7,7 @@ use super::frame_timers::{FrameTimers, FrameTimerId};
 use super::mesh_renderer::{MeshRenderer, MeshId, MeshList};
 use super::simulation::{Simulation, NewEntity};
 use super::sphere_renderer::{SphereRenderer, SphereList};
-use super::heightmap;
+use super::heightmap::Heightmap;
 use num::Zero;
 
 
@@ -52,11 +52,9 @@ impl App {
         camera.set_pitch(0.2919);
 
 
-        let world_mesh = try!(heightmap::read_heightmap("/home/ccc/seafloor.jpg",
-                                                        Vec3f::zero(),
-                                                        Vec3f::new(40.0, 15.0, 40.0),
-                                                        1.0)
-            .chain_err(|| "Failed to load height map."));
+        let world_mesh = try!(Heightmap::read("/home/ccc/seafloor.jpg", 0.5)
+                .chain_err(|| "Failed to load height map."))
+            .build_mesh(Vec3f::zero(), Vec3f::new(40.0, 15.0, 40.0));
         let world_mesh_id = try!(mesh_renderer.add(&window, &world_mesh)
             .chain_err(|| "Could not create world mesh."));
 
@@ -86,20 +84,20 @@ impl App {
                                                Gesture::KeyTrigger(Scancode::Escape)]);
         let explode_gesture = Gesture::KeyHold(Scancode::E);
 
-        let num_spheres = 10000;
+        let num_spheres = 20000;
         let mut rng = rand::ChaChaRng::new_unseeded();
         for _ in 0..num_spheres {
-            let position = Vec3f::new((rng.gen::<f32>() - 0.5) * 2.0 * 5.0,
-                                      (rng.gen::<f32>() - 0.5) * 2.0 * 5.0 + 20.0,
-                                      (rng.gen::<f32>() - 0.5) * 2.0 * 5.0);
-            let velocity = Vec3f::new((rng.gen::<f32>() - 0.5) * 10. + 10.0,
-                                      (rng.gen::<f32>() - 0.5) * 10. - 5.0,
+            let position = Vec3f::new((rng.gen::<f32>() - 0.5) * 2.0 * 20.0,
+                                      (rng.gen::<f32>() - 0.5) * 2.0 * 20.0 + 35.0,
+                                      (rng.gen::<f32>() - 0.5) * 2.0 * 20.0);
+            let velocity = Vec3f::new((rng.gen::<f32>() - 0.5) * 10.,
+                                      (rng.gen::<f32>() - 0.5) * 10. - 20.0,
                                       (rng.gen::<f32>() - 0.5) * 10.0);
             self.simulation.add(NewEntity {
                 position: position,
                 velocity: velocity,
                 mass: 1.0,
-                radius: 0.2,
+                radius: 0.1,
                 colour: Vec3f::new(rng.gen::<f32>(), rng.gen::<f32>(), rng.gen::<f32>()) * 0.7 +
                         Vec3f::new(0.2, 0.2, 0.2),
             });

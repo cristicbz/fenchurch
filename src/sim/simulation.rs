@@ -1,5 +1,5 @@
 use idcontain::{IdVec, Id};
-use math::{Vec3f, Vector, Vec4f, Aabb};
+use math::{Vec3f, Vector, Vec4f, Aabb, Sphere, ContactInfo};
 use num::Zero;
 use std::f32::consts;
 use super::bvh::Bvh;
@@ -8,16 +8,6 @@ use rayon::prelude::*;
 use std::cell::RefCell;
 use super::mesh_renderer::Mesh;
 
-const DRAG_COEFFICIENT: f32 = 1.0;
-const COMPRESS: f32 = 1000.0;
-const EXPLODE: f32 = 500.0;
-const GRAVITY: f32 = 20.0;
-
-struct Triangle {
-    normal: Vec3f,
-    intercept: f32,
-    vertices: [Vec3f; 3],
-}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct EntityId(Id<ComponentIndexes>);
@@ -27,6 +17,7 @@ pub struct Simulation {
 
     bvh_timer: FrameTimerId,
     forces_timer: FrameTimerId,
+    positions_timer: FrameTimerId,
 
     sphere_bvh: Bvh,
 
@@ -66,7 +57,7 @@ impl Simulation {
 
         let mut world_triangles = Vec::with_capacity(world_mesh.triangles.len());
         let world_bvh = {
-            let mut bvh = Bvh::new();
+            let mut bvh = Bvh::new(2);
             bvh.rebuild(world_mesh.triangles.iter().map(|triangle| {
                 Aabb::of_points(&[world_mesh.vertices[triangle[0] as usize].position,
                                   world_mesh.vertices[triangle[1] as usize].position,
@@ -76,22 +67,14 @@ impl Simulation {
         };
 
         world_triangles.extend(world_mesh.triangles.iter().map(|triangle| {
-            let vertices = [world_mesh.vertices[triangle[0] as usize].position,
+            Triangle::new(&[world_mesh.vertices[triangle[0] as usize].position,
                             world_mesh.vertices[triangle[1] as usize].position,
-                            world_mesh.vertices[triangle[2] as usize].position];
-            let edges = [vertices[1] - vertices[0], vertices[2] - vertices[0]];
-            let normal = edges[0].cross(edges[1]).normalized();
-            let intercept = -normal.dot(&vertices[0]);
-            Triangle {
-                normal: normal,
-                intercept: intercept,
-                vertices: vertices,
-            }
+                            world_mesh.vertices[triangle[2] as usize].position])
         }));
 
         Simulation {
             entities: IdVec::with_capacity(capacity),
-            sphere_bvh: Bvh::new(),
+            sphere_bvh: Bvh::new(6),
 
             world_mesh: world_mesh,
             world_bvh: world_bvh,
@@ -99,6 +82,7 @@ impl Simulation {
 
             bvh_timer: frame_timers.new_stopped("sim.bvh"),
             forces_timer: frame_timers.new_stopped("sim.frc"),
+            positions_timer: frame_timers.new_stopped("sim.pos"),
 
             timestep: 1. / 300.,
 
@@ -175,7 +159,9 @@ impl Simulation {
 
     pub fn update(&mut self, timers: &mut FrameTimers, _delta_time: f32) {
         self.velocities_halfstep();
+        timers.start(self.positions_timer);
         self.update_positions();
+        timers.stop(self.positions_timer);
         self.remove_outliers();
         timers.start(self.bvh_timer);
         self.update_bvh();
@@ -242,73 +228,8 @@ impl Simulation {
                     *force += direction * EXPLODE / (distance_squared * distance);
                 }
 
-                thread_local! {
-                    static THREAD_INTERSECTION_STACK: RefCell<Vec<usize>> =
-                        RefCell::new(Vec::with_capacity(128));
-                };
                 THREAD_INTERSECTION_STACK.with(|intersection_stack| {
                     let mut intersection_stack = intersection_stack.borrow_mut();
-
-                    for triangle_index in
-                        world_bvh.intersect_sphere(&mut intersection_stack, position, radius) {
-                        let Triangle { mut normal, intercept, ref vertices } =
-                            world_triangles[triangle_index];
-
-                        let mut min_distance = radius;
-                        let mut contact_normal = None;
-
-                        // Sphere against plane.
-                        let signed_plane_distance = normal.dot(&position) + intercept;
-                        let plane_distance = signed_plane_distance.abs();
-                        if plane_distance >= radius {
-                            continue;
-                        }
-                        let centre_on_plane = position - normal * signed_plane_distance;
-                        if is_point_inside_triangle(vertices, &centre_on_plane) {
-                            min_distance = plane_distance;
-                            contact_normal = Some(normal);
-                        }
-
-                        // Sphere against vertices.
-                        for vertex in vertices {
-                            let to_centre = position - *vertex;
-                            let distance_squared = to_centre.squared_norm();
-                            if distance_squared < min_distance * min_distance {
-                                let distance = distance_squared.sqrt();
-                                min_distance = distance;
-                                contact_normal = Some(normal * 0.125);
-                            }
-                        }
-
-                        // Sphere against edges.
-                        for (&v1, &v2) in vertices.iter()
-                            .zip(vertices.iter().skip(1).chain(Some(&vertices[0]))) {
-                            let edge = v2 - v1;
-                            let on_edge = (position - v1).dot(&edge) / edge.dot(&edge);
-                            if on_edge <= 0.0 || on_edge >= 1.0 {
-                                continue;
-                            }
-                            let projection = v1 + edge * on_edge;
-                            let edge_normal = position - projection;
-                            let edge_distance_squared = edge_normal.squared_norm();
-
-                            if edge_distance_squared < min_distance * min_distance {
-                                min_distance = edge_distance_squared.sqrt();
-                                contact_normal = Some(normal * 0.25);
-                            }
-                        }
-
-                        // Apply force.
-                        if let Some(contact_normal) = contact_normal {
-                            let velocity_along_normal = velocity.dot(&contact_normal);
-                            if velocity_along_normal < 0.0 {
-                                *force -= contact_normal * (1.2 * velocity_along_normal) /
-                                          (timestep * 0.5);
-                            }
-                            // *force += contact_normal * (radius - min_distance) * COMPRESS;
-                        } else {
-                        }
-                    }
 
                     for j_body in
                         sphere_bvh.intersect_sphere(&mut intersection_stack, position, radius) {
@@ -370,29 +291,42 @@ impl Simulation {
     }
 
     fn update_positions(&mut self) {
-        let mut positions = &mut self.positions[..];
-        let mut velocities = &mut self.velocities[..];
+        let Simulation { ref mut positions,
+                         ref mut velocities,
+                         ref world_triangles,
+                         ref world_bvh,
+                         timestep,
+                         .. } = *self;
 
         assert!(positions.len() == velocities.len());
-        let timestep = self.timestep;
-        let update = |position: &mut Vec3f, velocity: &mut Vec3f| {
-            *position += *velocity * timestep;
-        };
-
-        while positions.len() > 4 {
-            update(&mut positions[0], &mut velocities[0]);
-            update(&mut positions[1], &mut velocities[1]);
-            update(&mut positions[2], &mut velocities[2]);
-            update(&mut positions[3], &mut velocities[3]);
-
-            positions = &mut deborrow(positions)[4..];
-            velocities = &mut deborrow(velocities)[4..];
-        }
-
-        for i in 0..positions.len() {
-            update(&mut positions[i], &mut velocities[i]);
-        }
-
+        positions.par_iter_mut()
+            .zip(velocities)
+            .for_each(|(position, velocity)| {
+                THREAD_INTERSECTION_STACK.with(|intersection_stack| {
+                    let mut timestep = timestep;
+                    while timestep > 0.0 {
+                        let speed = velocity.norm();
+                        let sphere = Sphere::new(*position + *velocity * (timestep * 0.5),
+                                                 speed * timestep * 0.51);
+                        let (time, index) =
+                            world_bvh.intersect_sphere(&mut intersection_stack.borrow_mut(),
+                                                  sphere.center,
+                                                  sphere.radius)
+                                .map(|index| (index, &world_triangles[index]))
+                                .flat_map(|(index, triangle)| {
+                                    ray_triangle(position, velocity, &triangle)
+                                        .map(|time| (time, index))
+                                })
+                                .fold((timestep, !0), |x, y| if x <= y { x } else { y });
+                        *position += *velocity * (time - 1e-8);
+                        timestep -= time;
+                        if index != !0 {
+                            let normal = world_triangles[index].normal;
+                            *velocity -= normal * (velocity.dot(&normal) * 1.5);
+                        }
+                    }
+                })
+            });
     }
 
     fn remove_outliers(&mut self) {
@@ -436,16 +370,64 @@ fn lowest_quadratic_root(a: f32, b: f32, c: f32) -> Option<f32> {
     }
 }
 
-fn is_point_inside_triangle(verts: &[Vec3f; 3], point: &Vec3f) -> bool {
-    let u = verts[1] - verts[0];
-    let v = verts[2] - verts[0];
-    let n = u.cross(v);
-    let w = *point - verts[0];
-    let n2 = n.squared_norm();
+struct Triangle {
+    vertices: [Vec3f; 3],
+    normal: Vec3f,
+    intercept: f32,
 
-    let gamma = u.cross(w).dot(&n) / n2;
-    let beta = w.cross(v).dot(&n) / n2;
-    let alpha = 1.0 - gamma - beta;
+    u: Vec3f,
+    v: Vec3f,
+}
 
-    0.0 <= alpha && alpha <= 1.0 && 0.0 <= gamma && gamma <= 1.0 && 0.0 <= beta && beta <= 1.0
+impl Triangle {
+    fn new(vertices: &[Vec3f; 3]) -> Self {
+        let u = vertices[1] - vertices[0];
+        let v = vertices[2] - vertices[0];
+        let normal = u.cross(v).normalized();
+        let intercept = -normal.dot(&vertices[0]);
+
+        Triangle {
+            vertices: *vertices,
+            normal: normal,
+            intercept: intercept,
+
+            u: u,
+            v: v,
+        }
+    }
+}
+
+const DRAG_COEFFICIENT: f32 = 1.0;
+const COMPRESS: f32 = 1000.0;
+const EXPLODE: f32 = 500.0;
+const GRAVITY: f32 = 20.0;
+
+thread_local! {
+    static THREAD_INTERSECTION_STACK: RefCell<Vec<usize>> = RefCell::new(Vec::with_capacity(128));
+}
+
+fn ray_triangle(origin: &Vec3f, direction: &Vec3f, triangle: &Triangle) -> Option<f32> {
+    let &Triangle { ref vertices, ref u, ref v, .. } = triangle;
+    let pvec = direction.cross(*v);
+    let det = u.dot(&pvec);
+
+    if det < 1e-10 {
+        return None;
+    }
+
+    let inv_det = 1.0 / det;
+    let tvec = *origin - vertices[0];
+    let alpha = tvec.dot(&pvec) * inv_det;
+    if alpha < -1e-5 || alpha > 1.0 + 1e-5 {
+        return None;
+    }
+
+    let qvec = tvec.cross(*u);
+    let beta = direction.dot(&qvec) * inv_det;
+    if beta < -1e-5 || alpha + beta > 1.0 + 1e-5 {
+        return None;
+    }
+
+    let t = v.dot(&qvec) * inv_det;
+    if t > -1e-2 { Some(t) } else { None }
 }

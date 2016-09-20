@@ -4,7 +4,7 @@ use glium::{Program, Frame, Surface, DrawParameters, BackfaceCullingMode, Depth,
 use glium::texture::{Texture1d, UncompressedFloatFormat, MipmapsOption};
 use glium::uniforms::{SamplerWrapFunction, MagnifySamplerFilter, MinifySamplerFilter};
 use glium::vertex::EmptyVertexAttributes;
-use math::{Vec3f, Vector};
+use math::Vec3f;
 use super::errors::{Result, ChainErr};
 use super::lights::Lights;
 use std::u32;
