@@ -58,7 +58,7 @@ impl App {
         let world_mesh_id = try!(mesh_renderer.add(&window, &world_mesh)
             .chain_err(|| "Could not create world mesh."));
 
-        let simulation = Simulation::with_capacity(&mut timers, 16384, world_mesh);
+        let simulation = Simulation::with_capacity(&mut timers, 16384, &world_mesh);
 
         Ok(App {
             window: window,
@@ -87,11 +87,11 @@ impl App {
         let num_spheres = 20000;
         let mut rng = rand::ChaChaRng::new_unseeded();
         for _ in 0..num_spheres {
-            let position = Vec3f::new((rng.gen::<f32>() - 0.5) * 2.0 * 20.0,
-                                      (rng.gen::<f32>() - 0.5) * 2.0 * 20.0 + 35.0,
-                                      (rng.gen::<f32>() - 0.5) * 2.0 * 20.0);
+            let position = Vec3f::new((rng.gen::<f32>() - 0.5) * 2.0 * 15.0,
+                                      (rng.gen::<f32>() - 0.5) * 2.0 * 15.0 + 35.0,
+                                      (rng.gen::<f32>() - 0.5) * 2.0 * 15.0);
             let velocity = Vec3f::new((rng.gen::<f32>() - 0.5) * 10.,
-                                      (rng.gen::<f32>() - 0.5) * 10. - 20.0,
+                                      (rng.gen::<f32>() - 0.5) * 10. - 10.0,
                                       (rng.gen::<f32>() - 0.5) * 10.0);
             self.simulation.add(NewEntity {
                 position: position,

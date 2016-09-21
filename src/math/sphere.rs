@@ -23,7 +23,6 @@ impl Sphere {
                           speed: f32)
                           -> Option<ContactInfo> {
         let Sphere { ref center, radius } = *self;
-        let speed = vel.norm();
         if speed == 0.0 {
             return None;
         }

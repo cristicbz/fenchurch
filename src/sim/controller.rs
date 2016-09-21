@@ -29,7 +29,7 @@ impl Default for ControllerBindings {
                         step: 0.05,
                     },
                     Analog2d::Mouse {
-                        sensitivity: 0.004
+                        sensitivity: 0.008
                     },
                 ],
             },

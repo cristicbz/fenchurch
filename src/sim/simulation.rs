@@ -1,8 +1,9 @@
 use idcontain::{IdVec, Id};
-use math::{Vec3f, Vector, Vec4f, Aabb, Sphere, ContactInfo};
+use math::{Vec3f, Vector, Aabb, Sphere};
 use num::Zero;
 use std::f32::consts;
-use super::bvh::Bvh;
+use super::bvh::{Bvh, Options as BvhOptions, MinLeaves, Two, Four, Six, Sixteen,
+                 BinnedSahPartition, TotalAabbLimit, CentroidAabbLimit};
 use super::frame_timers::{FrameTimers, FrameTimerId};
 use rayon::prelude::*;
 use std::cell::RefCell;
@@ -19,10 +20,9 @@ pub struct Simulation {
     forces_timer: FrameTimerId,
     positions_timer: FrameTimerId,
 
-    sphere_bvh: Bvh,
+    sphere_bvh: Bvh<BvhOptions<MinLeaves<Six>, BinnedSahPartition<Four, TotalAabbLimit>>>,
 
-    world_mesh: Mesh,
-    world_bvh: Bvh,
+    world_bvh: Bvh<BvhOptions<MinLeaves<Two>, BinnedSahPartition<Sixteen, CentroidAabbLimit>>>,
     world_triangles: Vec<Triangle>,
 
     timestep: f32,
@@ -50,14 +50,13 @@ struct ComponentIndexes {
     base: u32,
 }
 
-
 impl Simulation {
-    pub fn with_capacity(frame_timers: &mut FrameTimers, capacity: u32, world_mesh: Mesh) -> Self {
+    pub fn with_capacity(frame_timers: &mut FrameTimers, capacity: u32, world_mesh: &Mesh) -> Self {
         let capacity = capacity as usize;
 
         let mut world_triangles = Vec::with_capacity(world_mesh.triangles.len());
         let world_bvh = {
-            let mut bvh = Bvh::new(2);
+            let mut bvh = Bvh::new();
             bvh.rebuild(world_mesh.triangles.iter().map(|triangle| {
                 Aabb::of_points(&[world_mesh.vertices[triangle[0] as usize].position,
                                   world_mesh.vertices[triangle[1] as usize].position,
@@ -74,9 +73,8 @@ impl Simulation {
 
         Simulation {
             entities: IdVec::with_capacity(capacity),
-            sphere_bvh: Bvh::new(6),
+            sphere_bvh: Bvh::new(),
 
-            world_mesh: world_mesh,
             world_bvh: world_bvh,
             world_triangles: world_triangles,
 
@@ -193,20 +191,16 @@ impl Simulation {
     }
 
     fn compute_forces(&mut self) {
-        let len = self.len();
-        let forces = &mut self.forces[..];
-        let world_triangles = &self.world_triangles[..];
-        let positions = &self.positions[..];
-        let velocities = &self.velocities[..];
-        let radii = &self.radii[..];
-        let sphere_bvh = &self.sphere_bvh;
-        let world_bvh = &self.world_bvh;
-        let explode = self.explode;
-        let timestep = self.timestep;
-
-
+        let Simulation { ref mut forces,
+                         ref positions,
+                         ref velocities,
+                         ref radii,
+                         ref sphere_bvh,
+                         explode,
+                         timestep,
+                         .. } = *self;
+        let len = positions.len();
         assert!(forces.len() == len);
-        assert!(positions.len() == len);
         assert!(velocities.len() == len);
         assert!(radii.len() == len);
 
@@ -231,19 +225,21 @@ impl Simulation {
                 THREAD_INTERSECTION_STACK.with(|intersection_stack| {
                     let mut intersection_stack = intersection_stack.borrow_mut();
 
+                    let mut n = 0;
                     for j_body in
                         sphere_bvh.intersect_sphere(&mut intersection_stack, position, radius) {
+                        n += 1;
                         if j_body == i_body {
                             continue;
                         }
                         let other_position = positions[j_body];
                         let other_radius = radii[j_body];
-                        let other_velocity = velocities[j_body];
 
                         let direction = position - other_position;
                         let min_distance = radius + other_radius;
                         let squared_distance = direction.squared_norm();
                         if squared_distance < min_distance * min_distance {
+                            let other_velocity = velocities[j_body];
                             let distance = squared_distance.sqrt() + 1e-8;
                             let correction = (min_distance / distance - 1.0) * COMPRESS * 0.5;
 
@@ -257,14 +253,17 @@ impl Simulation {
                             *force += direction * correction;
                         }
                     }
+                    if n >= 1000 {
+                        println!("{}", n)
+                    }
                 });
             });
     }
 
     fn velocities_halfstep(&mut self) {
         let mut velocities = &mut self.velocities[..];
-        let mut forces = &mut self.forces[..];
-        let mut masses = &mut self.masses[..];
+        let mut forces = &self.forces[..];
+        let mut masses = &self.masses[..];
 
         assert!(velocities.len() == forces.len());
         assert!(velocities.len() == masses.len());
@@ -281,8 +280,8 @@ impl Simulation {
             update(&mut velocities[3], forces[3], masses[3]);
 
             velocities = &mut deborrow(velocities)[4..];
-            forces = &mut deborrow(forces)[4..];
-            masses = &mut deborrow(masses)[4..];
+            forces = &forces[4..];
+            masses = &masses[4..];
         }
 
         for i in 0..velocities.len() {
@@ -304,7 +303,7 @@ impl Simulation {
             .for_each(|(position, velocity)| {
                 THREAD_INTERSECTION_STACK.with(|intersection_stack| {
                     let mut timestep = timestep;
-                    while timestep > 0.0 {
+                    for _ in 0..40 {
                         let speed = velocity.norm();
                         let sphere = Sphere::new(*position + *velocity * (timestep * 0.5),
                                                  speed * timestep * 0.51);
@@ -314,16 +313,17 @@ impl Simulation {
                                                   sphere.radius)
                                 .map(|index| (index, &world_triangles[index]))
                                 .flat_map(|(index, triangle)| {
-                                    ray_triangle(position, velocity, &triangle)
+                                    ray_triangle(position, velocity, &triangle.vertices)
                                         .map(|time| (time, index))
                                 })
                                 .fold((timestep, !0), |x, y| if x <= y { x } else { y });
-                        *position += *velocity * (time - 1e-8);
+                        *position += *velocity * time;
                         timestep -= time;
-                        if index != !0 {
-                            let normal = world_triangles[index].normal;
-                            *velocity -= normal * (velocity.dot(&normal) * 1.5);
+                        if timestep <= 1e-10 {
+                            break;
                         }
+                        let normal = world_triangles[index].normal;
+                        *velocity -= normal * (velocity.dot(&normal) * 1.5);
                     }
                 })
             });
@@ -349,34 +349,9 @@ fn deborrow<T>(value: T) -> T {
 }
 
 
-fn intersect_sphere_line(center: &Vec3f, radius: f32, p1: &Vec3f, p2: &Vec3f) -> Option<f32> {
-    let edge = *p2 - *p1;
-    let a = edge.squared_norm();
-    let b = 2.0 * edge.dot(&(*p1 - *center));
-    let c = center.squared_norm() + p1.squared_norm() - 2.0 * center.dot(p1) - radius * radius;
-    lowest_quadratic_root(a, b, c)
-}
-
-fn lowest_quadratic_root(a: f32, b: f32, c: f32) -> Option<f32> {
-    let i = b * b - 4.0 * a * c;
-    if i < 0.0 {
-        None
-    } else {
-        let i = i.sqrt();
-        let a2 = 2.0 * a;
-        let i1 = (-b + i) / a2;
-        let i2 = (-b - i) / a2;
-        if i1 < i2 { Some(i1) } else { Some(i2) }
-    }
-}
-
 struct Triangle {
     vertices: [Vec3f; 3],
     normal: Vec3f,
-    intercept: f32,
-
-    u: Vec3f,
-    v: Vec3f,
 }
 
 impl Triangle {
@@ -384,15 +359,10 @@ impl Triangle {
         let u = vertices[1] - vertices[0];
         let v = vertices[2] - vertices[0];
         let normal = u.cross(v).normalized();
-        let intercept = -normal.dot(&vertices[0]);
 
         Triangle {
             vertices: *vertices,
             normal: normal,
-            intercept: intercept,
-
-            u: u,
-            v: v,
         }
     }
 }
@@ -406,9 +376,10 @@ thread_local! {
     static THREAD_INTERSECTION_STACK: RefCell<Vec<usize>> = RefCell::new(Vec::with_capacity(128));
 }
 
-fn ray_triangle(origin: &Vec3f, direction: &Vec3f, triangle: &Triangle) -> Option<f32> {
-    let &Triangle { ref vertices, ref u, ref v, .. } = triangle;
-    let pvec = direction.cross(*v);
+fn ray_triangle(origin: &Vec3f, direction: &Vec3f, vertices: &[Vec3f]) -> Option<f32> {
+    let u = vertices[1] - vertices[0];
+    let v = vertices[2] - vertices[0];
+    let pvec = direction.cross(v);
     let det = u.dot(&pvec);
 
     if det < 1e-10 {
@@ -422,7 +393,7 @@ fn ray_triangle(origin: &Vec3f, direction: &Vec3f, triangle: &Triangle) -> Optio
         return None;
     }
 
-    let qvec = tvec.cross(*u);
+    let qvec = tvec.cross(u);
     let beta = direction.dot(&qvec) * inv_det;
     if beta < -1e-5 || alpha + beta > 1.0 + 1e-5 {
         return None;

@@ -29,15 +29,13 @@ impl Aabb {
     pub fn of_points(points: &[Vec3f]) -> Self {
         let mut aabb = Aabb::negative();
         for point in points {
-            for axis in 0..3 {
-                if point[axis] < aabb.min[axis] {
-                    aabb.min[axis] = point[axis];
-                }
+            aabb.min[0] = aabb.min[0].min(point[0]);
+            aabb.min[1] = aabb.min[1].min(point[1]);
+            aabb.min[2] = aabb.min[2].min(point[2]);
 
-                if point[axis] > aabb.max[axis] {
-                    aabb.max[axis] = point[axis];
-                }
-            }
+            aabb.max[0] = aabb.max[0].max(point[0]);
+            aabb.max[1] = aabb.max[1].max(point[1]);
+            aabb.max[2] = aabb.max[2].max(point[2]);
         }
         aabb
     }
