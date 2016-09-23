@@ -46,7 +46,7 @@ impl Mesh {
                              self.vertices[triangle[1] as usize].position,
                              self.vertices[triangle[2] as usize].position];
             let normal = (positions[1] - positions[0])
-                .cross(positions[2] - positions[0])
+                .cross(&(positions[2] - positions[0]))
                 .normalized();
             self.vertices[triangle[0] as usize].normal += normal;
             self.vertices[triangle[1] as usize].normal += normal;

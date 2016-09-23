@@ -273,23 +273,15 @@ impl<O: SpecifyOptions> Bvh<O> {
                                     radius: f32)
                                     -> SphereIntersectIter<'a, 'b, O> {
         iter_stack.clear();
-        if self.nodes.is_empty() || !self.nodes[0].aabb.intersects_sphere(position, radius) {
-            SphereIntersectIter {
-                bvh: self,
-                iter_stack: iter_stack,
-                position: position,
-                radius: radius,
-                state: State::Done,
-            }
-        } else {
+        if !self.nodes.is_empty() && self.nodes[0].aabb.intersects_sphere(position, radius) {
             iter_stack.push(0);
-            SphereIntersectIter {
-                bvh: self,
-                iter_stack: iter_stack,
-                position: position,
-                radius: radius,
-                state: State::FindIntersecting,
-            }
+        }
+        SphereIntersectIter {
+            bvh: self,
+            iter_stack: iter_stack,
+            position: position,
+            radius: radius,
+            leaves_iter: None,
         }
     }
 }
@@ -431,55 +423,56 @@ pub struct SphereIntersectIter<'a, 'b, O: SpecifyOptions + 'a> {
     iter_stack: &'b mut Vec<usize>,
     position: Vec3f,
     radius: f32,
-    state: State<'a>,
-}
-
-impl<'a, 'b, O: SpecifyOptions> SphereIntersectIter<'a, 'b, O> {
-    fn find_intersecting(&mut self) -> State<'a> {
-        let SphereIntersectIter { position, radius, .. } = *self;
-        while let Some(node_index) = self.iter_stack.pop() {
-            let node = &self.bvh.nodes[node_index];
-            if node.leaf_end != INVALID_ID {
-                return State::YieldLeaves(
-                    self.bvh.leaves[node.child as usize..node.leaf_end as usize].iter());
-            } else {
-                let child = node.child as usize;
-                if self.bvh.nodes[child].aabb.intersects_sphere(position, radius) {
-                    self.iter_stack.push(child);
-                }
-                if self.bvh.nodes[child + 1].aabb.intersects_sphere(position, radius) {
-                    self.iter_stack.push(child + 1);
-                }
-            }
-        }
-
-        State::Done
-    }
-}
-
-enum State<'a> {
-    FindIntersecting,
-    YieldLeaves(SliceIter<'a, u32>),
-    Done,
+    leaves_iter: Option<SliceIter<'a, u32>>,
 }
 
 impl<'a, 'b, O: SpecifyOptions> Iterator for SphereIntersectIter<'a, 'b, O> {
     type Item = usize;
 
     fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            let next_state;
-            match self.state {
-                State::YieldLeaves(ref mut iter) => {
-                    match iter.next() {
-                        Some(&index) => return Some(index as usize),
-                        None => next_state = State::FindIntersecting,
-                    }
-                }
-                State::FindIntersecting => next_state = self.find_intersecting(),
-                State::Done => return None,
+        let SphereIntersectIter { position, radius, .. } = *self;
+
+        if let Some(ref mut iter) = self.leaves_iter {
+            if let Some(&index) = iter.next() {
+                return Some(index as usize);
             }
-            self.state = next_state;
+        }
+
+        let mut node_index = match self.iter_stack.pop() {
+            Some(node_index) => node_index,
+            None => return None,
+        };
+
+        loop {
+            let node = &self.bvh.nodes[node_index];
+            if node.leaf_end != INVALID_ID {
+                let (start, end) = (node.child as usize, node.leaf_end as usize);
+                assert!(end <= self.bvh.leaves.len());
+                assert!(end > start);
+                self.leaves_iter = Some(self.bvh.leaves[start + 1..end].iter());
+                return Some(self.bvh.leaves[start] as usize);
+            } else {
+                let child = node.child as usize;
+                let intersect1 = self.bvh.nodes[child].aabb.intersects_sphere(position, radius);
+                let intersect2 = self.bvh.nodes[child + 1].aabb.intersects_sphere(position, radius);
+
+                if intersect1 {
+                    if intersect2 {
+                        self.iter_stack.push(child + 1);
+                    }
+                    node_index = child;
+                } else if intersect2 {
+                    if intersect1 {
+                        self.iter_stack.push(child);
+                    }
+                    node_index = child + 1;
+                } else {
+                    node_index = match self.iter_stack.pop() {
+                        Some(node_index) => node_index,
+                        None => return None,
+                    };
+                }
+            }
         }
     }
 }

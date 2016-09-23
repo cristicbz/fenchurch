@@ -7,7 +7,9 @@ pub type Vec3f = Vec3<f32>;
 pub type Vec4f = Vec4<f32>;
 
 pub trait Vector: Mul<<Self as Vector>::Scalar, Output=Self>
+                + MulAssign<<Self as Vector>::Scalar>
                 + Div<<Self as Vector>::Scalar, Output=Self>
+                + DivAssign<<Self as Vector>::Scalar>
                 + Add<Output=Self> + Sub<Output=Self> + Zero
                 + Clone + PartialEq + PartialOrd
                 + Index<usize, Output=<Self as Vector>::Scalar>
@@ -33,19 +35,20 @@ pub trait Vector: Mul<<Self as Vector>::Scalar, Output=Self>
     fn normalize(&mut self)
         where Self::Scalar: Float
     {
-        *self = self.clone().normalized();
+        let norm = self.norm();
+        if norm == Self::Scalar::zero() {
+            *self = Self::zero()
+        } else {
+            *self /= norm;
+        }
     }
 
     #[inline]
-    fn normalized(self) -> Self
+    fn normalized(mut self) -> Self
         where Self::Scalar: Float
     {
-        let norm = self.norm();
-        if norm == Self::Scalar::zero() {
-            Self::zero()
-        } else {
-            self / norm
-        }
+        self.normalize();
+        self
     }
 }
 
@@ -86,7 +89,7 @@ impl<Scalar: Field> Vec2<Scalar> {
     }
 
     #[inline]
-    pub fn normal(self) -> Vec2<Scalar>
+    pub fn normal(&self) -> Vec2<Scalar>
         where Scalar: Neg<Output = Scalar>
     {
         Vec2::new(-self[1], self[0])
@@ -113,6 +116,22 @@ impl<Scalar: Field> Vector for Vec2<Scalar> {
     #[inline]
     fn dot(&self, rhs: &Self) -> Scalar {
         self[0] * rhs[0] + self[1] * rhs[1]
+    }
+}
+
+impl<Scalar: Field> MulAssign<Scalar> for Vec2<Scalar> {
+    #[inline]
+    fn mul_assign(&mut self, rhs: Scalar) {
+        self[0] *= rhs;
+        self[1] *= rhs;
+    }
+}
+
+impl<Scalar: Field> DivAssign<Scalar> for Vec2<Scalar> {
+    #[inline]
+    fn div_assign(&mut self, rhs: Scalar) {
+        self[0] /= rhs;
+        self[1] /= rhs;
     }
 }
 
@@ -201,26 +220,26 @@ impl<Scalar: Field> Vec3<Scalar> {
     }
 
     #[inline]
-    pub fn cross(self, rhs: Vec3<Scalar>) -> Vec3<Scalar> {
+    pub fn cross(&self, rhs: &Vec3<Scalar>) -> Self {
         let (lx, ly, lz) = (self[0], self[1], self[2]);
         let (rx, ry, rz) = (rhs[0], rhs[1], rhs[2]);
         Vec3::new(ly * rz - lz * ry, lz * rx - lx * rz, lx * ry - ly * rx)
     }
 
     #[inline]
-    pub fn array(self) -> [Scalar; 3] {
-        self.0
+    pub fn array(&self) -> &[Scalar; 3] {
+        &self.0
     }
 }
 
 impl Vec3<f32> {
     #[inline]
-    pub fn max(self, scalar: f32) -> Self {
+    pub fn max(&self, scalar: f32) -> Self {
         Vec3([self.0[0].max(scalar), self.0[1].max(scalar), self.0[2].max(scalar)])
     }
 
     #[inline]
-    pub fn min(self, scalar: f32) -> Self {
+    pub fn min(&self, scalar: f32) -> Self {
         Vec3([self.0[0].min(scalar), self.0[1].min(scalar), self.0[2].min(scalar)])
     }
 }
@@ -291,9 +310,81 @@ impl<Scalar: Field> Add<Vec3<Scalar>> for Vec3<Scalar> {
     }
 }
 
-impl<Scalar: Field> AddAssign for Vec3<Scalar> {
+impl<Scalar: Field> Sub<Vec3<Scalar>> for Vec3<Scalar> {
+    type Output = Self;
+
+    #[inline]
+    fn sub(self, rhs: Vec3<Scalar>) -> Self {
+        Vec3([self[0] - rhs[0], self[1] - rhs[1], self[2] - rhs[2]])
+    }
+}
+
+impl<'a, Scalar: Field + Neg<Output = Scalar>> Neg for &'a Vec3<Scalar> {
+    type Output = Vec3<Scalar>;
+
+    #[inline]
+    fn neg(self) -> Vec3<Scalar> {
+        Vec3([-self[0], -self[1], -self[2]])
+    }
+}
+
+impl<'a, Scalar: Field> Mul<Scalar> for &'a Vec3<Scalar> {
+    type Output = Vec3<Scalar>;
+
+    #[inline]
+    fn mul(self, rhs: Scalar) -> Vec3<Scalar> {
+        Vec3([self[0] * rhs, self[1] * rhs, self[2] * rhs])
+    }
+}
+
+impl<'a, Scalar: Field> Mul<Vec3<Scalar>> for &'a Vec3<Scalar> {
+    type Output = Vec3<Scalar>;
+
+    #[inline]
+    fn mul(self, rhs: Vec3<Scalar>) -> Vec3<Scalar> {
+        Vec3([self[0] * rhs[0], self[1] * rhs[1], self[2] * rhs[2]])
+    }
+}
+
+impl<'a, Scalar: Field> Div<Scalar> for &'a Vec3<Scalar> {
+    type Output = Vec3<Scalar>;
+
+    #[inline]
+    fn div(self, rhs: Scalar) -> Vec3<Scalar> {
+        Vec3([self[0] / rhs, self[1] / rhs, self[2] / rhs])
+    }
+}
+
+impl<'a, Scalar: Field> Add<Vec3<Scalar>> for &'a Vec3<Scalar> {
+    type Output = Vec3<Scalar>;
+
+    #[inline]
+    fn add(self, rhs: Vec3<Scalar>) -> Vec3<Scalar> {
+        Vec3([self[0] + rhs[0], self[1] + rhs[1], self[2] + rhs[2]])
+    }
+}
+
+impl<'a, Scalar: Field> Sub<Vec3<Scalar>> for &'a Vec3<Scalar> {
+    type Output = Vec3<Scalar>;
+
+    #[inline]
+    fn sub(self, rhs: Vec3<Scalar>) -> Vec3<Scalar> {
+        Vec3([self[0] - rhs[0], self[1] - rhs[1], self[2] - rhs[2]])
+    }
+}
+
+impl<Scalar: Field> AddAssign<Vec3<Scalar>> for Vec3<Scalar> {
     #[inline]
     fn add_assign(&mut self, rhs: Vec3<Scalar>) {
+        self[0] += rhs[0];
+        self[1] += rhs[1];
+        self[2] += rhs[2];
+    }
+}
+
+impl<'a, Scalar: Field> AddAssign<&'a Vec3<Scalar>> for Vec3<Scalar> {
+    #[inline]
+    fn add_assign(&mut self, rhs: &'a Vec3<Scalar>) {
         self[0] += rhs[0];
         self[1] += rhs[1];
         self[2] += rhs[2];
@@ -309,12 +400,22 @@ impl<Scalar: Field> SubAssign for Vec3<Scalar> {
     }
 }
 
-impl<Scalar: Field> Sub<Vec3<Scalar>> for Vec3<Scalar> {
-    type Output = Self;
 
+impl<Scalar: Field> MulAssign<Scalar> for Vec3<Scalar> {
     #[inline]
-    fn sub(self, rhs: Vec3<Scalar>) -> Self {
-        Vec3([self[0] - rhs[0], self[1] - rhs[1], self[2] - rhs[2]])
+    fn mul_assign(&mut self, rhs: Scalar) {
+        self[0] *= rhs;
+        self[1] *= rhs;
+        self[2] *= rhs;
+    }
+}
+
+impl<Scalar: Field> DivAssign<Scalar> for Vec3<Scalar> {
+    #[inline]
+    fn div_assign(&mut self, rhs: Scalar) {
+        self[0] /= rhs;
+        self[1] /= rhs;
+        self[2] /= rhs;
     }
 }
 
@@ -347,13 +448,13 @@ impl<Scalar: Field> Vec4<Scalar> {
     }
 
     #[inline]
-    pub fn xyz(self) -> Vec3<Scalar> {
+    pub fn xyz(&self) -> Vec3<Scalar> {
         Vec3([self[0], self[1], self[2]])
     }
 
     #[inline]
-    pub fn array(self) -> [Scalar; 4] {
-        self.0
+    pub fn array(&self) -> &[Scalar; 4] {
+        &self.0
     }
 }
 
@@ -363,6 +464,26 @@ impl<Scalar: Field> Vector for Vec4<Scalar> {
     #[inline]
     fn dot(&self, rhs: &Self) -> Scalar {
         self[0] * rhs[0] + self[1] * rhs[1] + self[2] * rhs[2] + self[3] * rhs[3]
+    }
+}
+
+impl<Scalar: Field> MulAssign<Scalar> for Vec4<Scalar> {
+    #[inline]
+    fn mul_assign(&mut self, rhs: Scalar) {
+        self[0] *= rhs;
+        self[1] *= rhs;
+        self[2] *= rhs;
+        self[3] *= rhs;
+    }
+}
+
+impl<Scalar: Field> DivAssign<Scalar> for Vec4<Scalar> {
+    #[inline]
+    fn div_assign(&mut self, rhs: Scalar) {
+        self[0] /= rhs;
+        self[1] /= rhs;
+        self[2] /= rhs;
+        self[3] /= rhs;
     }
 }
 

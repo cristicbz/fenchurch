@@ -70,7 +70,7 @@ impl Sphere {
             let edge_squared_norm = edge.squared_norm();
             let edge_norm = edge_squared_norm.sqrt();
 
-            let edge_normal = nvel.cross(edge) / edge_norm;
+            let edge_normal = nvel.cross(&edge) / edge_norm;
             let edge_intercept = -edge_normal.dot(&e1);
             let edge_distance = edge_normal.dot(center) + edge_intercept;
             if edge_distance.abs() > radius {
@@ -156,12 +156,12 @@ fn intersect_line_line(p1: &Vec2f, p2: &Vec2f, p3: &Vec2f, p4: &Vec2f) -> Option
 fn is_point_inside_triangle(verts: &[Vec3f; 3], point: &Vec3f) -> bool {
     let u = verts[1] - verts[0];
     let v = verts[2] - verts[0];
-    let n = u.cross(v);
+    let n = u.cross(&v);
     let w = *point - verts[0];
     let n2 = n.squared_norm();
 
-    let gamma = u.cross(w).dot(&n) / n2;
-    let beta = w.cross(v).dot(&n) / n2;
+    let gamma = u.cross(&w).dot(&n) / n2;
+    let beta = w.cross(&v).dot(&n) / n2;
     let alpha = 1.0 - gamma - beta;
 
     0.0 <= alpha && alpha <= 1.0 && 0.0 <= gamma && gamma <= 1.0 && 0.0 <= beta && beta <= 1.0

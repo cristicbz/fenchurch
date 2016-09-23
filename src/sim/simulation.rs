@@ -1,13 +1,14 @@
 use idcontain::{IdVec, Id};
-use math::{Vec3f, Vector, Aabb, Sphere};
+use math::{Vec3f, Vector, Aabb};
 use num::Zero;
 use std::f32::consts;
-use super::bvh::{Bvh, Options as BvhOptions, MinLeaves, Two, Four, Six, Sixteen,
+use super::bvh::{Bvh, Options as BvhOptions, MinLeaves, Two, Four, Six, Sixteen, Eight,
                  BinnedSahPartition, TotalAabbLimit, CentroidAabbLimit};
 use super::frame_timers::{FrameTimers, FrameTimerId};
 use rayon::prelude::*;
 use std::cell::RefCell;
 use super::mesh_renderer::Mesh;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -20,7 +21,7 @@ pub struct Simulation {
     forces_timer: FrameTimerId,
     positions_timer: FrameTimerId,
 
-    sphere_bvh: Bvh<BvhOptions<MinLeaves<Six>, BinnedSahPartition<Four, TotalAabbLimit>>>,
+    sphere_bvh: Bvh<BvhOptions<MinLeaves<Six>, BinnedSahPartition<Four, CentroidAabbLimit>>>,
 
     world_bvh: Bvh<BvhOptions<MinLeaves<Two>, BinnedSahPartition<Sixteen, CentroidAabbLimit>>>,
     world_triangles: Vec<Triangle>,
@@ -204,34 +205,38 @@ impl Simulation {
         assert!(velocities.len() == len);
         assert!(radii.len() == len);
 
+        // let mut num_candidates = AtomicUsize::new(0);
+        // let mut num_actual = AtomicUsize::new(0);
+
         forces.par_iter_mut()
             .enumerate()
             .zip(positions)
             .zip(velocities)
             .zip(radii)
             .for_each(|((((i_body, force), &position), &velocity), &radius)| {
-                let speed = velocity.norm();
-                let drag = speed * consts::PI * radius * radius * DRAG_COEFFICIENT;
-                *force -= velocity * drag;
-                *force += Vec3f::new(0.0, -GRAVITY, 0.0);
-
-                if explode {
-                    let direction = position - Vec3f::new(-5.0, 2.0, 5.0);
-                    let distance_squared = direction.squared_norm().max(1.0);
-                    let distance = distance_squared.sqrt();
-                    *force += direction * EXPLODE / (distance_squared * distance);
-                }
-
                 THREAD_INTERSECTION_STACK.with(|intersection_stack| {
                     let mut intersection_stack = intersection_stack.borrow_mut();
+                    let speed = velocity.norm();
+                    let drag = speed * consts::PI * radius * radius * DRAG_COEFFICIENT;
+                    *force -= velocity * drag;
+                    *force += Vec3f::new(0.0, -GRAVITY, 0.0);
 
-                    let mut n = 0;
+                    if explode {
+                        let direction = position - Vec3f::new(-5.0, 2.0, 5.0);
+                        let distance_squared = direction.squared_norm().max(1.0);
+                        let distance = distance_squared.sqrt();
+                        *force += direction * EXPLODE / (distance_squared * distance);
+                    }
+
+                    // let mut local_num_candidates = 0;
+                    // let mut local_num_actual = 0;
                     for j_body in
                         sphere_bvh.intersect_sphere(&mut intersection_stack, position, radius) {
-                        n += 1;
                         if j_body == i_body {
                             continue;
                         }
+                        // local_num_candidates += 1;
+
                         let other_position = positions[j_body];
                         let other_radius = radii[j_body];
 
@@ -239,6 +244,7 @@ impl Simulation {
                         let min_distance = radius + other_radius;
                         let squared_distance = direction.squared_norm();
                         if squared_distance < min_distance * min_distance {
+                            // local_num_actual += 1;
                             let other_velocity = velocities[j_body];
                             let distance = squared_distance.sqrt() + 1e-8;
                             let correction = (min_distance / distance - 1.0) * COMPRESS * 0.5;
@@ -253,11 +259,14 @@ impl Simulation {
                             *force += direction * correction;
                         }
                     }
-                    if n >= 1000 {
-                        println!("{}", n)
-                    }
+                    // num_candidates.fetch_add(local_num_candidates, Ordering::Relaxed);
+                    // num_actual.fetch_add(local_num_actual, Ordering::Relaxed);
                 });
             });
+
+        // let fraction = num_actual.load(Ordering::SeqCst) as f32 /
+        //               num_candidates.load(Ordering::SeqCst) as f32;
+        // println!("Fraction: {:.2}", fraction * 100.0);
     }
 
     fn velocities_halfstep(&mut self) {
@@ -302,21 +311,21 @@ impl Simulation {
             .zip(velocities)
             .for_each(|(position, velocity)| {
                 THREAD_INTERSECTION_STACK.with(|intersection_stack| {
+                    let mut intersection_stack = intersection_stack.borrow_mut();
                     let mut timestep = timestep;
                     for _ in 0..40 {
                         let speed = velocity.norm();
-                        let sphere = Sphere::new(*position + *velocity * (timestep * 0.5),
-                                                 speed * timestep * 0.51);
-                        let (time, index) =
-                            world_bvh.intersect_sphere(&mut intersection_stack.borrow_mut(),
-                                                  sphere.center,
-                                                  sphere.radius)
-                                .map(|index| (index, &world_triangles[index]))
-                                .flat_map(|(index, triangle)| {
-                                    ray_triangle(position, velocity, &triangle.vertices)
-                                        .map(|time| (time, index))
-                                })
-                                .fold((timestep, !0), |x, y| if x <= y { x } else { y });
+                        let probe_position = *position + *velocity * (timestep * 0.5);
+                        let probe_radius = speed * timestep * 0.51;
+                        let (time, index) = world_bvh.intersect_sphere(&mut intersection_stack,
+                                              probe_position,
+                                              probe_radius)
+                            .map(|index| (index, &world_triangles[index]))
+                            .flat_map(|(index, triangle)| {
+                                ray_triangle(position, velocity, &triangle.vertices)
+                                    .map(|time| (time, index))
+                            })
+                            .fold((timestep, !0), |x, y| if x <= y { x } else { y });
                         *position += *velocity * time;
                         timestep -= time;
                         if timestep <= 1e-10 {
@@ -358,7 +367,7 @@ impl Triangle {
     fn new(vertices: &[Vec3f; 3]) -> Self {
         let u = vertices[1] - vertices[0];
         let v = vertices[2] - vertices[0];
-        let normal = u.cross(v).normalized();
+        let normal = u.cross(&v).normalized();
 
         Triangle {
             vertices: *vertices,
@@ -379,7 +388,7 @@ thread_local! {
 fn ray_triangle(origin: &Vec3f, direction: &Vec3f, vertices: &[Vec3f]) -> Option<f32> {
     let u = vertices[1] - vertices[0];
     let v = vertices[2] - vertices[0];
-    let pvec = direction.cross(v);
+    let pvec = direction.cross(&v);
     let det = u.dot(&pvec);
 
     if det < 1e-10 {
@@ -393,7 +402,7 @@ fn ray_triangle(origin: &Vec3f, direction: &Vec3f, vertices: &[Vec3f]) -> Option
         return None;
     }
 
-    let qvec = tvec.cross(u);
+    let qvec = tvec.cross(&u);
     let beta = direction.dot(&qvec) * inv_det;
     if beta < -1e-5 || alpha + beta > 1.0 + 1e-5 {
         return None;

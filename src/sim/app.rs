@@ -9,6 +9,7 @@ use super::simulation::{Simulation, NewEntity};
 use super::sphere_renderer::{SphereRenderer, SphereList};
 use super::heightmap::Heightmap;
 use num::Zero;
+use std::time::Instant;
 
 
 pub struct App {
@@ -52,7 +53,7 @@ impl App {
         camera.set_pitch(0.2919);
 
 
-        let world_mesh = try!(Heightmap::read("/home/ccc/seafloor.jpg", 0.5)
+        let world_mesh = try!(Heightmap::read("/home/ccc/HMquest02.png", 0.5)
                 .chain_err(|| "Failed to load height map."))
             .build_mesh(Vec3f::zero(), Vec3f::new(40.0, 15.0, 40.0));
         let world_mesh_id = try!(mesh_renderer.add(&window, &world_mesh)
@@ -84,14 +85,14 @@ impl App {
                                                Gesture::KeyTrigger(Scancode::Escape)]);
         let explode_gesture = Gesture::KeyHold(Scancode::E);
 
-        let num_spheres = 20000;
+        let num_spheres = 80000;
         let mut rng = rand::ChaChaRng::new_unseeded();
         for _ in 0..num_spheres {
-            let position = Vec3f::new((rng.gen::<f32>() - 0.5) * 2.0 * 15.0,
-                                      (rng.gen::<f32>() - 0.5) * 2.0 * 15.0 + 35.0,
-                                      (rng.gen::<f32>() - 0.5) * 2.0 * 15.0);
+            let position = Vec3f::new((rng.gen::<f32>() - 0.5) * 2.0 * 7.0,
+                                      rng.gen::<f32>() * 5.0 + 12.0,
+                                      (rng.gen::<f32>() - 0.5) * 2.0 * 7.0);
             let velocity = Vec3f::new((rng.gen::<f32>() - 0.5) * 10.,
-                                      (rng.gen::<f32>() - 0.5) * 10. - 10.0,
+                                      (rng.gen::<f32>() - 0.5) * 10.,
                                       (rng.gen::<f32>() - 0.5) * 10.0);
             self.simulation.add(NewEntity {
                 position: position,
@@ -108,34 +109,35 @@ impl App {
 
         info!("Entering main loop...");
         let mut running = true;
-        while running {
-            let mut frame = self.window.draw();
+        let start_instant = Instant::now();
+        for _ in 0..1000 {
+            // let mut frame = self.window.draw();
             let frame_result = (|| -> Result<()> {
                 let delta_time = self.timers.start(self.frame_timer).unwrap_or(1.0 / 60.0);
                 self.timers.start(self.cpu_timer);
                 self.input.update();
 
                 self.timers.start(self.render_timer);
-                try!(self.sphere_renderer
-                    .render(&self.window,
-                            &self.camera,
-                            &mut frame,
-                            SphereList {
-                                positions: self.simulation.positions(),
-                                radii: self.simulation.radii(),
-                                colours: self.simulation.colours(),
-                            })
-                    .chain_err(|| "Failed to render spheres."));
-                try!(self.mesh_renderer
-                    .render(&self.window,
-                            &self.camera,
-                            &mut frame,
-                            MeshList {
-                                ids: &meshes,
-                                colours: &colours,
-                                transforms: &transforms,
-                            })
-                    .chain_err(|| "Failed to render meshes."));
+                // try!(self.sphere_renderer
+                //    .render(&self.window,
+                //            &self.camera,
+                //            &mut frame,
+                //            SphereList {
+                //                positions: self.simulation.positions(),
+                //                radii: self.simulation.radii(),
+                //                colours: self.simulation.colours(),
+                //            })
+                //    .chain_err(|| "Failed to render spheres."));
+                // try!(self.mesh_renderer
+                //    .render(&self.window,
+                //            &self.camera,
+                //            &mut frame,
+                //            MeshList {
+                //                ids: &meshes,
+                //                colours: &colours,
+                //                transforms: &transforms,
+                //            })
+                //    .chain_err(|| "Failed to render meshes."));
                 self.timers.stop(self.render_timer);
 
                 if self.input.poll_gesture(&quit_gesture) {
@@ -154,9 +156,12 @@ impl App {
                 self.timers.stop(self.cpu_timer);
                 Ok(())
             })();
-            try!(frame.finish().chain_err(|| "Context lost."));
+            // try!(frame.finish().chain_err(|| "Context lost."));
             try!(frame_result);
         }
+        let runtime = start_instant.elapsed();
+        let runtime = runtime.as_secs() as f64 + runtime.subsec_nanos() as f64 * 1e-9;
+        info!("Ran for {:.2}s", runtime);
 
         Ok(())
     }
