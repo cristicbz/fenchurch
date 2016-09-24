@@ -9,6 +9,7 @@ extern crate time;
 extern crate idcontain;
 extern crate rand;
 extern crate rayon;
+extern crate parking_lot;
 
 #[macro_use]
 extern crate glium;

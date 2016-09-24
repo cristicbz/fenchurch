@@ -1,7 +1,7 @@
 use super::Vec3f;
 use std::f32;
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub struct Aabb {
     min: Vec3f,
     max: Vec3f,
@@ -54,7 +54,7 @@ impl Aabb {
     }
 
     #[inline]
-    pub fn intersects_sphere(&self, position: Vec3f, radius: f32) -> bool {
+    pub fn intersects_sphere(&self, position: &Vec3f, radius: f32) -> bool {
         return self.min[0] - position[0] <= radius && self.min[1] - position[1] <= radius &&
                self.min[2] - position[2] <= radius &&
                position[0] - self.max[0] <= radius &&

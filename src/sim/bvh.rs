@@ -1,11 +1,8 @@
 use math::{Aabb, Vec3f};
 use rayon;
-use rayon::prelude::*;
 use std::f32;
 use std::marker::PhantomData;
 use std::mem;
-use std::ops::DerefMut;
-use std::slice::Iter as SliceIter;
 use super::atomic_mut_indexer::AtomicMutIndexer;
 
 pub enum Two {}
@@ -243,10 +240,11 @@ impl<O: SpecifyOptions> Bvh<O> {
         centroids.extend(bbs.iter().map(|bb| bb.centroid()));
 
         nodes.clear();
-        if num_bbs < O::MinLeaves::min_leaves() {
+        if num_bbs <= O::MinLeaves::min_leaves() {
             nodes.push(Node {
                 aabb: Aabb::union(&bbs[..]),
                 child: 0,
+                max_index: num_bbs as u32 - 1,
                 leaf_end: num_bbs as u32,
             });
             return;
@@ -256,10 +254,12 @@ impl<O: SpecifyOptions> Bvh<O> {
             let node_indexer = AtomicMutIndexer::new(nodes);
             let (root_index, root) = node_indexer.get().unwrap();
             assert_eq!(root_index, 0);
+            let root_aabb = Aabb::union(&bbs[..]);
+            root.aabb = root_aabb;
+            root.max_index = num_bbs as u32 - 1;
             parallel_expand::<O>(&node_indexer,
                                  NodeExpansion {
                                      node: root,
-                                     aabb: Aabb::union(&bbs[..]),
                                      bbs: bbs,
                                      centroids: centroids,
                                      leaves: leaves,
@@ -271,38 +271,29 @@ impl<O: SpecifyOptions> Bvh<O> {
     }
 
     #[inline]
-    pub fn intersect_sphere<'a, 'b>(&'a self,
-                                    iter_stack: &'b mut Vec<usize>,
-                                    position: Vec3f,
-                                    radius: f32)
-                                    -> SphereIntersectIter<'a, 'b, O> {
-        iter_stack.clear();
-        if !self.nodes.is_empty() && self.nodes[0].aabb.intersects_sphere(position, radius) {
-            iter_stack.push(0);
-        }
-        SphereIntersectIter {
-            bvh: self,
-            iter_stack: iter_stack,
-            position: position,
-            radius: radius,
-            leaves_iter: None,
-        }
-    }
-
-    #[inline]
-    pub fn on_sphere_intersection<F>(&self, position: Vec3f, radius: f32, mut handler: F)
+    pub fn on_sphere_intersection<F>(&self,
+                                     position: &Vec3f,
+                                     radius: f32,
+                                     min_index: usize,
+                                     mut handler: F)
         where F: FnMut(usize)
     {
-        if self.nodes.is_empty() || !self.nodes[0].aabb.intersects_sphere(position, radius) {
+        if self.nodes.is_empty() || min_index >= self.leaves.len() ||
+           !self.nodes[0].aabb.intersects_sphere(position, radius) {
             return;
         }
-        self.sphere_intersector(&mut handler, &position, radius, &self.nodes[0]);
+        self.sphere_intersector(&mut handler,
+                                &position,
+                                radius,
+                                min_index as u32,
+                                &self.nodes[0]);
     }
 
     fn sphere_intersector<'a, F>(&'a self,
                                  handler: &mut F,
                                  position: &Vec3f,
                                  radius: f32,
+                                 min_index: u32,
                                  mut node: &'a Node)
         where F: FnMut(usize)
     {
@@ -312,19 +303,23 @@ impl<O: SpecifyOptions> Bvh<O> {
                 assert!(end <= self.leaves.len());
                 assert!(end > start);
                 for &leaf in &self.leaves[start..end] {
-                    handler(leaf as usize);
+                    if leaf >= min_index {
+                        handler(leaf as usize);
+                    }
                 }
                 return;
             } else {
                 let child_index = node.child as usize;
                 let child2 = &self.nodes[child_index + 1];
                 let child1 = &self.nodes[child_index];
-                let intersect1 = child1.aabb.intersects_sphere(*position, radius);
-                let intersect2 = child2.aabb.intersects_sphere(*position, radius);
+                let intersect1 = child1.max_index >= min_index &&
+                                 child1.aabb.intersects_sphere(position, radius);
+                let intersect2 = child2.max_index >= min_index &&
+                                 child2.aabb.intersects_sphere(position, radius);
 
                 if intersect2 {
                     if intersect1 {
-                        self.sphere_intersector(handler, position, radius, child1);
+                        self.sphere_intersector(handler, position, radius, min_index, child1);
                     }
                     node = child2;
                 } else if intersect1 {
@@ -344,6 +339,7 @@ const MAX_CAPACITY: u32 = INVALID_ID;
 #[derive(Clone, Debug)]
 struct Node {
     aabb: Aabb,
+    max_index: u32,
     child: u32,
     leaf_end: u32,
 }
@@ -354,24 +350,20 @@ impl Node {
             aabb: Aabb::negative(),
             child: INVALID_ID,
             leaf_end: INVALID_ID,
+            max_index: INVALID_ID,
         }
     }
 }
-
 
 const SEQUENTIAL_EXPANSION_THRESHOLD: usize = 512;
 
 struct NodeExpansion<'a> {
     node: &'a mut Node,
-    aabb: Aabb,
     bbs: &'a mut [Aabb],
     centroids: &'a mut [Vec3f],
     leaves: &'a mut [u32],
     offset: u32,
 }
-
-
-use std::cell::RefCell;
 
 #[inline]
 fn parallel_expand<'a, O: SpecifyOptions>(node_indexer: &'a AtomicMutIndexer<Node>,
@@ -402,167 +394,71 @@ fn sequential_expand<'a, O: SpecifyOptions>(node_indexer: &'a AtomicMutIndexer<N
     }
 }
 
-
-
 fn expand_node<'a, O: SpecifyOptions>(node_indexer: &'a AtomicMutIndexer<Node>,
                                       expansion: NodeExpansion<'a>)
                                       -> (Option<NodeExpansion<'a>>, Option<NodeExpansion<'a>>) {
-    let NodeExpansion { node, aabb, bbs, centroids, leaves, offset } = expansion;
+    let NodeExpansion { node, bbs, centroids, leaves, offset } = expansion;
 
     let min_leaves = O::MinLeaves::min_leaves();
     let len = bbs.len();
-    assert!(len >= min_leaves);
+    assert!(len > min_leaves);
     assert_eq!(leaves.len(), len);
     assert_eq!(centroids.len(), len);
 
-    let (split, left_bb, right_bb) = match O::Heuristic::partition(&aabb, bbs, centroids, leaves) {
-        Some((split, left_bb, right_bb)) => {
-            assert!(split != 0 && split != len);
-            (split, left_bb, right_bb)
-        }
-        None => {
-            *node = Node {
-                aabb: aabb,
-                child: offset,
-                leaf_end: offset + bbs.len() as u32,
-            };
-            return (None, None);
-        }
-    };
+    let (split, left_bb, right_bb) =
+        match O::Heuristic::partition(&node.aabb, bbs, centroids, leaves) {
+            Some(partition) => partition,
+            None => {
+                node.child = offset;
+                node.leaf_end = offset + len as u32;
+                return (None, None);
+            }
+        };
 
+    assert!(split > 0 && split < len);
     let (left_bbs, right_bbs) = bbs.split_at_mut(split);
     let (left_centroids, right_centroids) = centroids.split_at_mut(split);
     let (left_leaves, right_leaves) = leaves.split_at_mut(split);
-
+    let (len, split) = (len as u32, split as u32);
     let (index1, child1, child2) = node_indexer.get2().expect("not enough preallocated nodes");
 
-    *node = Node {
-        aabb: aabb,
-        child: index1 as u32,
-        leaf_end: INVALID_ID,
+    node.child = index1 as u32;
+    node.leaf_end = INVALID_ID;
+
+    child1.aabb = left_bb;
+    child1.max_index = *left_leaves.iter().max().expect("left_leaves shouldn't be empty");
+    let left = if left_bbs.len() <= min_leaves {
+        child1.child = offset;
+        child1.leaf_end = offset + split;
+        None
+    } else {
+        Some(NodeExpansion {
+            node: child1,
+            bbs: left_bbs,
+            centroids: left_centroids,
+            leaves: left_leaves,
+            offset: offset,
+        })
     };
 
-    if left_bbs.len() < min_leaves && right_bbs.len() < min_leaves {
-        *child1 = Node {
-            aabb: left_bb,
-            child: offset,
-            leaf_end: offset + split as u32,
-        };
-        *child2 = Node {
-            aabb: right_bb,
-            child: offset + split as u32,
-            leaf_end: offset + len as u32,
-        };
-        (None, None)
-    } else if left_bbs.len() < min_leaves {
-        *child1 = Node {
-            aabb: left_bb,
-            child: offset,
-            leaf_end: offset + split as u32,
-        };
-        (Some(NodeExpansion {
-            node: child2,
-            aabb: right_bb,
-            bbs: right_bbs,
-            centroids: right_centroids,
-            leaves: right_leaves,
-            offset: offset + split as u32,
-        }),
-         None)
-    } else if right_bbs.len() < min_leaves {
-        *child2 = Node {
-            aabb: right_bb,
-            child: offset + split as u32,
-            leaf_end: offset + len as u32,
-        };
-        (Some(NodeExpansion {
-            node: child1,
-            aabb: left_bb,
-            bbs: left_bbs,
-            centroids: left_centroids,
-            leaves: left_leaves,
-            offset: offset,
-        }),
-         None)
+    child2.aabb = right_bb;
+    child2.max_index = *right_leaves.iter().max().expect("right_leaves shouldn't be empty");
+    let right = if right_bbs.len() <= min_leaves {
+        child2.child = offset + split;
+        child2.leaf_end = offset + len;
+        None
     } else {
-        (Some(NodeExpansion {
-            node: child1,
-            aabb: left_bb,
-            bbs: left_bbs,
-            centroids: left_centroids,
-            leaves: left_leaves,
-            offset: offset,
-        }),
-         Some(NodeExpansion {
+        Some(NodeExpansion {
             node: child2,
-            aabb: right_bb,
             bbs: right_bbs,
             centroids: right_centroids,
             leaves: right_leaves,
-            offset: offset + split as u32,
-        }))
-    }
+            offset: offset + split,
+        })
+    };
+
+    (left, right)
 }
-
-pub struct SphereIntersectIter<'a, 'b, O: SpecifyOptions + 'a> {
-    bvh: &'a Bvh<O>,
-    iter_stack: &'b mut Vec<usize>,
-    position: Vec3f,
-    radius: f32,
-    leaves_iter: Option<SliceIter<'a, u32>>,
-}
-
-impl<'a, 'b, O: SpecifyOptions> Iterator for SphereIntersectIter<'a, 'b, O> {
-    type Item = usize;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let SphereIntersectIter { position, radius, .. } = *self;
-
-        if let Some(ref mut iter) = self.leaves_iter {
-            if let Some(&index) = iter.next() {
-                return Some(index as usize);
-            }
-        }
-
-        let mut node_index = match self.iter_stack.pop() {
-            Some(node_index) => node_index,
-            None => return None,
-        };
-
-        loop {
-            let node = &self.bvh.nodes[node_index];
-            if node.leaf_end != INVALID_ID {
-                let (start, end) = (node.child as usize, node.leaf_end as usize);
-                assert!(end <= self.bvh.leaves.len());
-                assert!(end > start);
-                self.leaves_iter = Some(self.bvh.leaves[start + 1..end].iter());
-                return Some(self.bvh.leaves[start] as usize);
-            } else {
-                let child = node.child as usize;
-                let intersect1 = self.bvh.nodes[child].aabb.intersects_sphere(position, radius);
-                let intersect2 = self.bvh.nodes[child + 1].aabb.intersects_sphere(position, radius);
-
-                if intersect1 {
-                    if intersect2 {
-                        self.iter_stack.push(child + 1);
-                    }
-                    node_index = child;
-                } else if intersect2 {
-                    if intersect1 {
-                        self.iter_stack.push(child);
-                    }
-                    node_index = child + 1;
-                } else {
-                    node_index = match self.iter_stack.pop() {
-                        Some(node_index) => node_index,
-                        None => return None,
-                    };
-                }
-            }
-        }
-    }
-}
-
 
 #[derive(Copy, Clone)]
 struct Bins<N: SpecifyBinCount> {
@@ -602,11 +498,7 @@ impl<N: SpecifyBinCount> Bins<N> {
             let bin_counts = bins.counts.as_mut();
             let bin_bbs = bins.bbs.as_mut();
             for (bb, centroid) in bbs.iter().zip(centroids) {
-                let mut bin_index = (binning_const * (centroid[axis] - min_limit)) as usize;
-                if bin_index >= N::specify_number() {
-                    bin_index = N::specify_number() - 1;
-                }
-
+                let bin_index = (binning_const * (centroid[axis] - min_limit)) as usize;
                 bin_counts[bin_index] += 1;
                 bin_bbs[bin_index].add_aabb(bb);
             }
@@ -714,14 +606,13 @@ impl<N: SpecifyBinCount, Limits: SahBinLimits> PartitionHeuristic for BinnedSahP
         let limit = (best_bin_index + 1) as f32;
         let mut split = 0;
         for i_leaf in 0..len {
-            if binning_const * (centroids[i_leaf][axis] - min_limit) <= limit {
+            if binning_const * (centroids[i_leaf][axis] - min_limit) < limit {
                 bbs.swap(split, i_leaf);
                 centroids.swap(split, i_leaf);
                 leaves.swap(split, i_leaf);
                 split += 1;
             }
         }
-
         Some((split, left_bbs[best_bin_index], best_right_bb))
     }
 }

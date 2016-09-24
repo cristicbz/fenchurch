@@ -53,7 +53,7 @@ impl App {
         camera.set_pitch(0.2919);
 
 
-        let world_mesh = try!(Heightmap::read("/home/ccc/HMquest02.png", 0.5)
+        let world_mesh = try!(Heightmap::read("/home/ccc/HMquest03.png", 0.5)
                 .chain_err(|| "Failed to load height map."))
             .build_mesh(Vec3f::zero(), Vec3f::new(40.0, 15.0, 40.0));
         let world_mesh_id = try!(mesh_renderer.add(&window, &world_mesh)
@@ -88,9 +88,9 @@ impl App {
         let num_spheres = 100000;
         let mut rng = rand::ChaChaRng::new_unseeded();
         for _ in 0..num_spheres {
-            let position = Vec3f::new((rng.gen::<f32>() - 0.5) * 2.0 * 18.0,
-                                      rng.gen::<f32>() * 5.0 + 12.0,
-                                      (rng.gen::<f32>() - 0.5) * 2.0 * 18.0);
+            let position = Vec3f::new((rng.gen::<f32>() - 0.5) * 2.0 * 3.0,
+                                      rng.gen::<f32>() * 4.0 + 12.0,
+                                      (rng.gen::<f32>() - 0.5) * 2.0 * 3.0);
             let velocity = Vec3f::new((rng.gen::<f32>() - 0.5) * 10.,
                                       (rng.gen::<f32>() - 0.5) * 10.,
                                       (rng.gen::<f32>() - 0.5) * 10.0);
@@ -111,6 +111,23 @@ impl App {
         let mut running = true;
         let start_instant = Instant::now();
         while running {
+            for _ in self.simulation.len()..num_spheres {
+                let position = Vec3f::new((rng.gen::<f32>() - 0.5) * 2.0 * 15.0,
+                                          rng.gen::<f32>() * 5.0 + 30.0,
+                                          (rng.gen::<f32>() - 0.5) * 2.0 * 15.0);
+                let velocity = Vec3f::new((rng.gen::<f32>() - 0.5) * 10.,
+                                          (rng.gen::<f32>() - 0.5) * 10. - 20.0,
+                                          (rng.gen::<f32>() - 0.5) * 10.0);
+                self.simulation.add(NewEntity {
+                    position: position,
+                    velocity: velocity,
+                    mass: 1.0,
+                    radius: 0.1,
+                    colour: Vec3f::new(rng.gen::<f32>(), rng.gen::<f32>(), rng.gen::<f32>()) *
+                            0.7 + Vec3f::new(0.2, 0.2, 0.2),
+                });
+            }
+
             let mut frame = self.window.draw();
             let frame_result = (|| -> Result<()> {
                 let delta_time = self.timers.start(self.frame_timer).unwrap_or(1.0 / 60.0);

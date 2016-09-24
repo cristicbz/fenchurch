@@ -2,13 +2,12 @@ use idcontain::{IdVec, Id};
 use math::{Vec3f, Vector, Aabb};
 use num::Zero;
 use std::f32::consts;
-use super::bvh::{Bvh, Options as BvhOptions, MinLeaves, Two, Four, Six, Sixteen, Eight,
+use super::bvh::{Bvh, Options as BvhOptions, MinLeaves, Two, Four, Six, Sixteen,
                  BinnedSahPartition, TotalAabbLimit, CentroidAabbLimit};
 use super::frame_timers::{FrameTimers, FrameTimerId};
 use rayon::prelude::*;
-use std::cell::RefCell;
 use super::mesh_renderer::Mesh;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use parking_lot::Mutex;
 
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -21,7 +20,7 @@ pub struct Simulation {
     forces_timer: FrameTimerId,
     positions_timer: FrameTimerId,
 
-    sphere_bvh: Bvh<BvhOptions<MinLeaves<Six>, BinnedSahPartition<Four, CentroidAabbLimit>>>,
+    sphere_bvh: Bvh<BvhOptions<MinLeaves<Six>, BinnedSahPartition<Four, TotalAabbLimit>>>,
 
     world_bvh: Bvh<BvhOptions<MinLeaves<Two>, BinnedSahPartition<Sixteen, CentroidAabbLimit>>>,
     world_triangles: Vec<Triangle>,
@@ -34,6 +33,8 @@ pub struct Simulation {
     radii: Vec<f32>,
     reverse_lookup: Vec<EntityId>,
     velocities: Vec<Vec3f>,
+
+    minus_forces: Vec<Mutex<Vec3f>>,
 
     explode: bool,
 }
@@ -87,6 +88,7 @@ impl Simulation {
 
             colours: Vec::with_capacity(capacity),
             forces: Vec::with_capacity(capacity),
+            minus_forces: Vec::with_capacity(capacity),
             masses: Vec::with_capacity(capacity),
             positions: Vec::with_capacity(capacity),
             radii: Vec::with_capacity(capacity),
@@ -103,6 +105,7 @@ impl Simulation {
 
         self.colours.push(entity.colour);
         self.forces.push(Vec3f::zero());
+        self.minus_forces.push(Mutex::new(Vec3f::zero()));
         self.masses.push(entity.mass);
         self.positions.push(entity.position);
         self.radii.push(entity.radius);
@@ -118,6 +121,7 @@ impl Simulation {
             if swap_index == index {
                 self.colours.pop();
                 self.forces.pop();
+                self.minus_forces.pop();
                 self.masses.pop();
                 self.positions.pop();
                 self.radii.pop();
@@ -126,6 +130,7 @@ impl Simulation {
             } else {
                 self.colours.swap_remove(index);
                 self.forces.swap_remove(index);
+                self.minus_forces.swap_remove(index);
                 self.masses.swap_remove(index);
                 self.positions.swap_remove(index);
                 self.radii.swap_remove(index);
@@ -165,8 +170,8 @@ impl Simulation {
         timers.start(self.bvh_timer);
         self.update_bvh();
         timers.stop(self.bvh_timer);
-        self.zero_forces();
         timers.start(self.forces_timer);
+        self.zero_forces();
         self.compute_forces();
         timers.stop(self.forces_timer);
         self.velocities_halfstep();
@@ -189,10 +194,14 @@ impl Simulation {
     fn zero_forces(&mut self) {
         self.forces.clear();
         self.forces.resize(self.positions.len(), Vec3f::zero());
+        for force in &mut self.minus_forces {
+            *force.get_mut() = Vec3f::zero();
+        }
     }
 
     fn compute_forces(&mut self) {
         let Simulation { ref mut forces,
+                         ref mut minus_forces,
                          ref positions,
                          ref velocities,
                          ref radii,
@@ -204,65 +213,58 @@ impl Simulation {
         assert!(forces.len() == len);
         assert!(velocities.len() == len);
         assert!(radii.len() == len);
+        assert!(minus_forces.len() == len);
 
-        // let mut num_candidates = AtomicUsize::new(0);
-        // let mut num_actual = AtomicUsize::new(0);
+        {
+            let locking_minus_forces: &[Mutex<Vec3f>] = &*minus_forces;
+            forces.par_iter_mut()
+                .enumerate()
+                .zip(positions)
+                .zip(velocities)
+                .zip(radii)
+                .for_each(|((((i_body, force), position), velocity), &radius)| {
+                    let speed = velocity.norm();
+                    let drag = speed * consts::PI * radius * radius * DRAG_COEFFICIENT;
+                    *force -= *velocity * drag;
+                    *force += Vec3f::new(0.0, -GRAVITY, 0.0);
 
-        forces.par_iter_mut()
-            .enumerate()
-            .zip(positions)
-            .zip(velocities)
-            .zip(radii)
-            .for_each(|((((i_body, force), &position), &velocity), &radius)| {
-                let speed = velocity.norm();
-                let drag = speed * consts::PI * radius * radius * DRAG_COEFFICIENT;
-                *force -= velocity * drag;
-                *force += Vec3f::new(0.0, -GRAVITY, 0.0);
-
-                if explode {
-                    let direction = position - Vec3f::new(-5.0, 2.0, 5.0);
-                    let distance_squared = direction.squared_norm().max(1.0);
-                    let distance = distance_squared.sqrt();
-                    *force += direction * EXPLODE / (distance_squared * distance);
-                }
-
-                // let mut local_num_candidates = 0;
-                // let mut local_num_actual = 0;
-                sphere_bvh.on_sphere_intersection(position, radius, |j_body| {
-                    if j_body == i_body {
-                        return;
+                    if explode {
+                        let direction = *position - Vec3f::new(-5.0, 2.0, 5.0);
+                        let distance_squared = direction.squared_norm().max(1.0);
+                        let distance = distance_squared.sqrt();
+                        *force += direction * EXPLODE / (distance_squared * distance);
                     }
-                    // local_num_candidates += 1;
 
-                    let other_position = positions[j_body];
-                    let other_radius = radii[j_body];
+                    sphere_bvh.on_sphere_intersection(position, radius, i_body + 1, |j_body| {
+                        let other_position = &positions[j_body];
+                        let other_radius = radii[j_body];
 
-                    let direction = position - other_position;
-                    let min_distance = radius + other_radius;
-                    let squared_distance = direction.squared_norm();
-                    if squared_distance < min_distance * min_distance {
-                        // local_num_actual += 1;
-                        let other_velocity = velocities[j_body];
-                        let distance = squared_distance.sqrt() + 1e-8;
-                        let correction = (min_distance / distance - 1.0) * COMPRESS * 0.5;
+                        let direction = *position - *other_position;
+                        let min_distance = radius + other_radius;
+                        let squared_distance = direction.squared_norm();
+                        if squared_distance < min_distance * min_distance {
+                            let other_velocity = &velocities[j_body];
+                            let distance = squared_distance.sqrt() + 1e-8;
+                            let correction = (min_distance / distance - 1.0) * COMPRESS * 0.5;
 
-                        let relative = velocity - other_velocity;
-                        let normal_dot = relative.dot(&direction) / distance;
-                        if normal_dot < 0.0 {
-                            let normal_dot = normal_dot.max(-0.5 / (timestep * 0.5));
-                            *force += relative * normal_dot * 1.0;
+                            let relative = *velocity - *other_velocity;
+                            let normal_dot = relative.dot(&direction) / distance;
+                            if normal_dot < 0.0 {
+                                let normal_dot = normal_dot.max(-0.5 / (timestep * 0.5));
+                                *force += relative * normal_dot * 1.0;
+                            }
+
+                            let new_force = direction * correction;
+                            *force += new_force;
+                            *locking_minus_forces[j_body].lock() += new_force;
                         }
-
-                        *force += direction * correction;
-                    }
+                    });
                 });
-                // num_candidates.fetch_add(local_num_candidates, Ordering::Relaxed);
-                // num_actual.fetch_add(local_num_actual, Ordering::Relaxed);
-            });
+        }
 
-        // let fraction = num_actual.load(Ordering::SeqCst) as f32 /
-        //               num_candidates.load(Ordering::SeqCst) as f32;
-        // println!("Fraction: {:.2}", fraction * 100.0);
+        forces.par_iter_mut().zip(minus_forces.par_iter_mut()).for_each(|(force, minus_force)| {
+            *force -= *minus_force.get_mut();
+        });
     }
 
     fn velocities_halfstep(&mut self) {
@@ -313,7 +315,7 @@ impl Simulation {
                     let probe_radius = speed * timestep * 0.51;
                     let mut first_time = timestep;
                     let mut first_index = !0;
-                    world_bvh.on_sphere_intersection(probe_position, probe_radius, |index| {
+                    world_bvh.on_sphere_intersection(&probe_position, probe_radius, 0, |index| {
                         if let Some(time) = ray_triangle(position,
                                                          velocity,
                                                          &world_triangles[index].vertices) {
@@ -337,14 +339,13 @@ impl Simulation {
     fn remove_outliers(&mut self) {
         let mut removals = Vec::new();
         for (i_position, position) in self.positions.iter_mut().enumerate() {
-            if position.squared_norm() > 1000.0 * 1000.0 {
+            if position[1] < -5.0 {
                 removals.push(self.reverse_lookup[i_position]);
             }
         }
 
         for removal in removals {
             self.remove(removal);
-            info!("Remove entity {:?}", removal);
         }
     }
 }
