@@ -85,12 +85,12 @@ impl App {
                                                Gesture::KeyTrigger(Scancode::Escape)]);
         let explode_gesture = Gesture::KeyHold(Scancode::E);
 
-        let num_spheres = 80000;
+        let num_spheres = 100000;
         let mut rng = rand::ChaChaRng::new_unseeded();
         for _ in 0..num_spheres {
-            let position = Vec3f::new((rng.gen::<f32>() - 0.5) * 2.0 * 7.0,
+            let position = Vec3f::new((rng.gen::<f32>() - 0.5) * 2.0 * 18.0,
                                       rng.gen::<f32>() * 5.0 + 12.0,
-                                      (rng.gen::<f32>() - 0.5) * 2.0 * 7.0);
+                                      (rng.gen::<f32>() - 0.5) * 2.0 * 18.0);
             let velocity = Vec3f::new((rng.gen::<f32>() - 0.5) * 10.,
                                       (rng.gen::<f32>() - 0.5) * 10.,
                                       (rng.gen::<f32>() - 0.5) * 10.0);
@@ -110,34 +110,34 @@ impl App {
         info!("Entering main loop...");
         let mut running = true;
         let start_instant = Instant::now();
-        for _ in 0..1000 {
-            // let mut frame = self.window.draw();
+        while running {
+            let mut frame = self.window.draw();
             let frame_result = (|| -> Result<()> {
                 let delta_time = self.timers.start(self.frame_timer).unwrap_or(1.0 / 60.0);
                 self.timers.start(self.cpu_timer);
                 self.input.update();
 
                 self.timers.start(self.render_timer);
-                // try!(self.sphere_renderer
-                //    .render(&self.window,
-                //            &self.camera,
-                //            &mut frame,
-                //            SphereList {
-                //                positions: self.simulation.positions(),
-                //                radii: self.simulation.radii(),
-                //                colours: self.simulation.colours(),
-                //            })
-                //    .chain_err(|| "Failed to render spheres."));
-                // try!(self.mesh_renderer
-                //    .render(&self.window,
-                //            &self.camera,
-                //            &mut frame,
-                //            MeshList {
-                //                ids: &meshes,
-                //                colours: &colours,
-                //                transforms: &transforms,
-                //            })
-                //    .chain_err(|| "Failed to render meshes."));
+                try!(self.sphere_renderer
+                    .render(&self.window,
+                            &self.camera,
+                            &mut frame,
+                            SphereList {
+                                positions: self.simulation.positions(),
+                                radii: self.simulation.radii(),
+                                colours: self.simulation.colours(),
+                            })
+                    .chain_err(|| "Failed to render spheres."));
+                try!(self.mesh_renderer
+                    .render(&self.window,
+                            &self.camera,
+                            &mut frame,
+                            MeshList {
+                                ids: &meshes,
+                                colours: &colours,
+                                transforms: &transforms,
+                            })
+                    .chain_err(|| "Failed to render meshes."));
                 self.timers.stop(self.render_timer);
 
                 if self.input.poll_gesture(&quit_gesture) {
@@ -156,7 +156,7 @@ impl App {
                 self.timers.stop(self.cpu_timer);
                 Ok(())
             })();
-            // try!(frame.finish().chain_err(|| "Context lost."));
+            try!(frame.finish().chain_err(|| "Context lost."));
             try!(frame_result);
         }
         let runtime = start_instant.elapsed();

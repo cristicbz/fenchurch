@@ -55,12 +55,11 @@ impl Aabb {
 
     #[inline]
     pub fn intersects_sphere(&self, position: Vec3f, radius: f32) -> bool {
-        let min_diff = self.min - position;
-        let max_diff = position - self.max;
-
-        return min_diff[0] <= radius && min_diff[1] <= radius && min_diff[2] <= radius &&
-               max_diff[0] <= radius && max_diff[1] <= radius &&
-               max_diff[2] <= radius;
+        return self.min[0] - position[0] <= radius && self.min[1] - position[1] <= radius &&
+               self.min[2] - position[2] <= radius &&
+               position[0] - self.max[0] <= radius &&
+               position[1] - self.max[1] <= radius &&
+               position[2] - self.max[2] <= radius;
     }
 
     #[inline]

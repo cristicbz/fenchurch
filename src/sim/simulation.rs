@@ -214,54 +214,50 @@ impl Simulation {
             .zip(velocities)
             .zip(radii)
             .for_each(|((((i_body, force), &position), &velocity), &radius)| {
-                THREAD_INTERSECTION_STACK.with(|intersection_stack| {
-                    let mut intersection_stack = intersection_stack.borrow_mut();
-                    let speed = velocity.norm();
-                    let drag = speed * consts::PI * radius * radius * DRAG_COEFFICIENT;
-                    *force -= velocity * drag;
-                    *force += Vec3f::new(0.0, -GRAVITY, 0.0);
+                let speed = velocity.norm();
+                let drag = speed * consts::PI * radius * radius * DRAG_COEFFICIENT;
+                *force -= velocity * drag;
+                *force += Vec3f::new(0.0, -GRAVITY, 0.0);
 
-                    if explode {
-                        let direction = position - Vec3f::new(-5.0, 2.0, 5.0);
-                        let distance_squared = direction.squared_norm().max(1.0);
-                        let distance = distance_squared.sqrt();
-                        *force += direction * EXPLODE / (distance_squared * distance);
+                if explode {
+                    let direction = position - Vec3f::new(-5.0, 2.0, 5.0);
+                    let distance_squared = direction.squared_norm().max(1.0);
+                    let distance = distance_squared.sqrt();
+                    *force += direction * EXPLODE / (distance_squared * distance);
+                }
+
+                // let mut local_num_candidates = 0;
+                // let mut local_num_actual = 0;
+                sphere_bvh.on_sphere_intersection(position, radius, |j_body| {
+                    if j_body == i_body {
+                        return;
                     }
+                    // local_num_candidates += 1;
 
-                    // let mut local_num_candidates = 0;
-                    // let mut local_num_actual = 0;
-                    for j_body in
-                        sphere_bvh.intersect_sphere(&mut intersection_stack, position, radius) {
-                        if j_body == i_body {
-                            continue;
+                    let other_position = positions[j_body];
+                    let other_radius = radii[j_body];
+
+                    let direction = position - other_position;
+                    let min_distance = radius + other_radius;
+                    let squared_distance = direction.squared_norm();
+                    if squared_distance < min_distance * min_distance {
+                        // local_num_actual += 1;
+                        let other_velocity = velocities[j_body];
+                        let distance = squared_distance.sqrt() + 1e-8;
+                        let correction = (min_distance / distance - 1.0) * COMPRESS * 0.5;
+
+                        let relative = velocity - other_velocity;
+                        let normal_dot = relative.dot(&direction) / distance;
+                        if normal_dot < 0.0 {
+                            let normal_dot = normal_dot.max(-0.5 / (timestep * 0.5));
+                            *force += relative * normal_dot * 1.0;
                         }
-                        // local_num_candidates += 1;
 
-                        let other_position = positions[j_body];
-                        let other_radius = radii[j_body];
-
-                        let direction = position - other_position;
-                        let min_distance = radius + other_radius;
-                        let squared_distance = direction.squared_norm();
-                        if squared_distance < min_distance * min_distance {
-                            // local_num_actual += 1;
-                            let other_velocity = velocities[j_body];
-                            let distance = squared_distance.sqrt() + 1e-8;
-                            let correction = (min_distance / distance - 1.0) * COMPRESS * 0.5;
-
-                            let relative = velocity - other_velocity;
-                            let normal_dot = relative.dot(&direction) / distance;
-                            if normal_dot < 0.0 {
-                                let normal_dot = normal_dot.max(-0.5 / (timestep * 0.5));
-                                *force += relative * normal_dot * 1.0;
-                            }
-
-                            *force += direction * correction;
-                        }
+                        *force += direction * correction;
                     }
-                    // num_candidates.fetch_add(local_num_candidates, Ordering::Relaxed);
-                    // num_actual.fetch_add(local_num_actual, Ordering::Relaxed);
                 });
+                // num_candidates.fetch_add(local_num_candidates, Ordering::Relaxed);
+                // num_actual.fetch_add(local_num_actual, Ordering::Relaxed);
             });
 
         // let fraction = num_actual.load(Ordering::SeqCst) as f32 /
@@ -310,31 +306,31 @@ impl Simulation {
         positions.par_iter_mut()
             .zip(velocities)
             .for_each(|(position, velocity)| {
-                THREAD_INTERSECTION_STACK.with(|intersection_stack| {
-                    let mut intersection_stack = intersection_stack.borrow_mut();
-                    let mut timestep = timestep;
-                    for _ in 0..40 {
-                        let speed = velocity.norm();
-                        let probe_position = *position + *velocity * (timestep * 0.5);
-                        let probe_radius = speed * timestep * 0.51;
-                        let (time, index) = world_bvh.intersect_sphere(&mut intersection_stack,
-                                              probe_position,
-                                              probe_radius)
-                            .map(|index| (index, &world_triangles[index]))
-                            .flat_map(|(index, triangle)| {
-                                ray_triangle(position, velocity, &triangle.vertices)
-                                    .map(|time| (time, index))
-                            })
-                            .fold((timestep, !0), |x, y| if x <= y { x } else { y });
-                        *position += *velocity * time;
-                        timestep -= time;
-                        if timestep <= 1e-10 {
-                            break;
+                let mut timestep = timestep;
+                for _ in 0..40 {
+                    let speed = velocity.norm();
+                    let probe_position = *position + *velocity * (timestep * 0.5);
+                    let probe_radius = speed * timestep * 0.51;
+                    let mut first_time = timestep;
+                    let mut first_index = !0;
+                    world_bvh.on_sphere_intersection(probe_position, probe_radius, |index| {
+                        if let Some(time) = ray_triangle(position,
+                                                         velocity,
+                                                         &world_triangles[index].vertices) {
+                            if time < first_time {
+                                first_time = time;
+                                first_index = index;
+                            }
                         }
-                        let normal = world_triangles[index].normal;
-                        *velocity -= normal * (velocity.dot(&normal) * 1.5);
+                    });
+                    *position += *velocity * first_time;
+                    timestep -= first_time;
+                    if timestep <= 1e-10 {
+                        break;
                     }
-                })
+                    let normal = world_triangles[first_index].normal;
+                    *velocity -= normal * (velocity.dot(&normal) * 1.5);
+                }
             });
     }
 
@@ -380,10 +376,6 @@ const DRAG_COEFFICIENT: f32 = 1.0;
 const COMPRESS: f32 = 1000.0;
 const EXPLODE: f32 = 500.0;
 const GRAVITY: f32 = 20.0;
-
-thread_local! {
-    static THREAD_INTERSECTION_STACK: RefCell<Vec<usize>> = RefCell::new(Vec::with_capacity(128));
-}
 
 fn ray_triangle(origin: &Vec3f, direction: &Vec3f, vertices: &[Vec3f]) -> Option<f32> {
     let u = vertices[1] - vertices[0];

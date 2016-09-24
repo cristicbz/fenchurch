@@ -2,10 +2,11 @@ use math::{Aabb, Vec3f};
 use rayon;
 use rayon::prelude::*;
 use std::f32;
-use super::atomic_mut_indexer::AtomicMutIndexer;
-use std::slice::Iter as SliceIter;
-use std::mem;
 use std::marker::PhantomData;
+use std::mem;
+use std::ops::DerefMut;
+use std::slice::Iter as SliceIter;
+use super::atomic_mut_indexer::AtomicMutIndexer;
 
 pub enum Two {}
 pub enum Four {}
@@ -255,18 +256,21 @@ impl<O: SpecifyOptions> Bvh<O> {
             let node_indexer = AtomicMutIndexer::new(nodes);
             let (root_index, root) = node_indexer.get().unwrap();
             assert_eq!(root_index, 0);
-            expand_node::<O>(root,
-                             &node_indexer,
-                             Aabb::union(&bbs[..]),
-                             bbs,
-                             centroids,
-                             leaves,
-                             0);
+            parallel_expand::<O>(&node_indexer,
+                                 NodeExpansion {
+                                     node: root,
+                                     aabb: Aabb::union(&bbs[..]),
+                                     bbs: bbs,
+                                     centroids: centroids,
+                                     leaves: leaves,
+                                     offset: 0,
+                                 });
             node_indexer.done()
         };
         nodes.truncate(num_nodes);
     }
 
+    #[inline]
     pub fn intersect_sphere<'a, 'b>(&'a self,
                                     iter_stack: &'b mut Vec<usize>,
                                     position: Vec3f,
@@ -284,7 +288,55 @@ impl<O: SpecifyOptions> Bvh<O> {
             leaves_iter: None,
         }
     }
+
+    #[inline]
+    pub fn on_sphere_intersection<F>(&self, position: Vec3f, radius: f32, mut handler: F)
+        where F: FnMut(usize)
+    {
+        if self.nodes.is_empty() || !self.nodes[0].aabb.intersects_sphere(position, radius) {
+            return;
+        }
+        self.sphere_intersector(&mut handler, &position, radius, &self.nodes[0]);
+    }
+
+    fn sphere_intersector<'a, F>(&'a self,
+                                 handler: &mut F,
+                                 position: &Vec3f,
+                                 radius: f32,
+                                 mut node: &'a Node)
+        where F: FnMut(usize)
+    {
+        loop {
+            if node.leaf_end != INVALID_ID {
+                let (start, end) = (node.child as usize, node.leaf_end as usize);
+                assert!(end <= self.leaves.len());
+                assert!(end > start);
+                for &leaf in &self.leaves[start..end] {
+                    handler(leaf as usize);
+                }
+                return;
+            } else {
+                let child_index = node.child as usize;
+                let child2 = &self.nodes[child_index + 1];
+                let child1 = &self.nodes[child_index];
+                let intersect1 = child1.aabb.intersects_sphere(*position, radius);
+                let intersect2 = child2.aabb.intersects_sphere(*position, radius);
+
+                if intersect2 {
+                    if intersect1 {
+                        self.sphere_intersector(handler, position, radius, child1);
+                    }
+                    node = child2;
+                } else if intersect1 {
+                    node = child1;
+                } else {
+                    return;
+                }
+            }
+        }
+    }
 }
+
 
 const INVALID_ID: u32 = 0xff_ff_ff_ff;
 const MAX_CAPACITY: u32 = INVALID_ID;
@@ -306,36 +358,67 @@ impl Node {
     }
 }
 
-fn expand_node<O: SpecifyOptions>(node: &mut Node,
-                                  node_indexer: &AtomicMutIndexer<Node>,
-                                  aabb: Aabb,
-                                  bbs: &mut [Aabb],
-                                  centroids: &mut [Vec3f],
-                                  leaves: &mut [u32],
-                                  offset: u32) {
+
+const SEQUENTIAL_EXPANSION_THRESHOLD: usize = 512;
+
+struct NodeExpansion<'a> {
+    node: &'a mut Node,
+    aabb: Aabb,
+    bbs: &'a mut [Aabb],
+    centroids: &'a mut [Vec3f],
+    leaves: &'a mut [u32],
+    offset: u32,
+}
+
+
+use std::cell::RefCell;
+
+#[inline]
+fn parallel_expand<'a, O: SpecifyOptions>(node_indexer: &'a AtomicMutIndexer<Node>,
+                                          mut expansion: NodeExpansion<'a>) {
+    while expansion.bbs.len() > SEQUENTIAL_EXPANSION_THRESHOLD {
+        match expand_node::<O>(node_indexer, expansion) {
+            (Some(e1), Some(e2)) => {
+                rayon::join(|| parallel_expand::<O>(node_indexer, e1),
+                            || parallel_expand::<O>(node_indexer, e2));
+                return;
+            }
+            (Some(e), None) | (None, Some(e)) => expansion = e,
+            (None, None) => return,
+        }
+    }
+    sequential_expand::<O>(node_indexer, expansion);
+}
+
+fn sequential_expand<'a, O: SpecifyOptions>(node_indexer: &'a AtomicMutIndexer<Node>,
+                                            expansion: NodeExpansion<'a>) {
+    match expand_node::<O>(node_indexer, expansion) {
+        (Some(e1), Some(e2)) => {
+            sequential_expand::<O>(node_indexer, e1);
+            sequential_expand::<O>(node_indexer, e2);
+        }
+        (Some(e), None) | (None, Some(e)) => return sequential_expand::<O>(node_indexer, e),
+        (None, None) => return,
+    }
+}
+
+
+
+fn expand_node<'a, O: SpecifyOptions>(node_indexer: &'a AtomicMutIndexer<Node>,
+                                      expansion: NodeExpansion<'a>)
+                                      -> (Option<NodeExpansion<'a>>, Option<NodeExpansion<'a>>) {
+    let NodeExpansion { node, aabb, bbs, centroids, leaves, offset } = expansion;
+
     let min_leaves = O::MinLeaves::min_leaves();
     let len = bbs.len();
     assert!(len >= min_leaves);
     assert_eq!(leaves.len(), len);
     assert_eq!(centroids.len(), len);
+
     let (split, left_bb, right_bb) = match O::Heuristic::partition(&aabb, bbs, centroids, leaves) {
         Some((split, left_bb, right_bb)) => {
-            if split == 0 || split == len {
-                let axis = aabb.longest_axis();
-                let limit = centroids[len / 2][axis];
-                let mut split = 0;
-                for i_leaf in 0..len {
-                    if centroids[i_leaf][axis] <= limit {
-                        bbs.swap(split, i_leaf);
-                        centroids.swap(split, i_leaf);
-                        leaves.swap(split, i_leaf);
-                        split += 1;
-                    }
-                }
-                (split, Aabb::union(&bbs[..split]), Aabb::union(&bbs[split..]))
-            } else {
-                (split, left_bb, right_bb)
-            }
+            assert!(split != 0 && split != len);
+            (split, left_bb, right_bb)
         }
         None => {
             *node = Node {
@@ -343,7 +426,7 @@ fn expand_node<O: SpecifyOptions>(node: &mut Node,
                 child: offset,
                 leaf_end: offset + bbs.len() as u32,
             };
-            return;
+            return (None, None);
         }
     };
 
@@ -370,51 +453,54 @@ fn expand_node<O: SpecifyOptions>(node: &mut Node,
             child: offset + split as u32,
             leaf_end: offset + len as u32,
         };
+        (None, None)
     } else if left_bbs.len() < min_leaves {
         *child1 = Node {
             aabb: left_bb,
             child: offset,
             leaf_end: offset + split as u32,
         };
-        expand_node::<O>(child2,
-                         node_indexer,
-                         right_bb,
-                         right_bbs,
-                         right_centroids,
-                         right_leaves,
-                         offset + split as u32)
+        (Some(NodeExpansion {
+            node: child2,
+            aabb: right_bb,
+            bbs: right_bbs,
+            centroids: right_centroids,
+            leaves: right_leaves,
+            offset: offset + split as u32,
+        }),
+         None)
     } else if right_bbs.len() < min_leaves {
         *child2 = Node {
             aabb: right_bb,
             child: offset + split as u32,
             leaf_end: offset + len as u32,
         };
-        expand_node::<O>(child1,
-                         node_indexer,
-                         left_bb,
-                         left_bbs,
-                         left_centroids,
-                         left_leaves,
-                         offset)
+        (Some(NodeExpansion {
+            node: child1,
+            aabb: left_bb,
+            bbs: left_bbs,
+            centroids: left_centroids,
+            leaves: left_leaves,
+            offset: offset,
+        }),
+         None)
     } else {
-        rayon::join(|| {
-            expand_node::<O>(child1,
-                             node_indexer,
-                             left_bb,
-                             left_bbs,
-                             left_centroids,
-                             left_leaves,
-                             offset)
-        },
-                    || {
-            expand_node::<O>(child2,
-                             node_indexer,
-                             right_bb,
-                             right_bbs,
-                             right_centroids,
-                             right_leaves,
-                             offset + split as u32)
-        });
+        (Some(NodeExpansion {
+            node: child1,
+            aabb: left_bb,
+            bbs: left_bbs,
+            centroids: left_centroids,
+            leaves: left_leaves,
+            offset: offset,
+        }),
+         Some(NodeExpansion {
+            node: child2,
+            aabb: right_bb,
+            bbs: right_bbs,
+            centroids: right_centroids,
+            leaves: right_leaves,
+            offset: offset + split as u32,
+        }))
     }
 }
 
@@ -516,8 +602,11 @@ impl<N: SpecifyBinCount> Bins<N> {
             let bin_counts = bins.counts.as_mut();
             let bin_bbs = bins.bbs.as_mut();
             for (bb, centroid) in bbs.iter().zip(centroids) {
-                let centroid = centroid[axis];
-                let bin_index = (binning_const * (centroid - min_limit)) as usize;
+                let mut bin_index = (binning_const * (centroid[axis] - min_limit)) as usize;
+                if bin_index >= N::specify_number() {
+                    bin_index = N::specify_number() - 1;
+                }
+
                 bin_counts[bin_index] += 1;
                 bin_bbs[bin_index].add_aabb(bb);
             }
