@@ -123,3 +123,55 @@ impl Aabb {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use math::Vec3f;
+    use super::Aabb;
+    use num::Zero;
+
+    #[test]
+    fn test_aabb_union() {
+        let aabb = Aabb::union(&[Aabb::of_sphere(&Vec3f::zero(), 1.0),
+                                 Aabb::of_sphere(&Vec3f::zero(), 2.0),
+                                 Aabb::of_sphere(&Vec3f::new(1.0, 0.0, 0.0), 1.0),
+                                 Aabb::of_sphere(&Vec3f::new(-1.0, 0.0, 0.0), 2.0),
+                                 Aabb::of_sphere(&Vec3f::new(1.0, 2.0, 0.0), 1.0)]);
+
+        assert_eq!(aabb.min(), &Vec3f::new(-3.0, -2.0, -2.0));
+        assert_eq!(aabb.max(), &Vec3f::new(2.0, 3.0, 2.0));
+    }
+
+    #[test]
+    fn test_aabb_sphere() {
+        let aabb = Aabb::of_points(&[Vec3f::new(-1.0, -1.0, -1.0), Vec3f::new(1.0, 1.0, 1.0)]);
+
+        assert!(aabb.intersects_sphere(&Vec3f::new(0.0, 0.0, 0.0), 1.0));
+        assert!(aabb.intersects_sphere(&Vec3f::new(0.0, 0.0, 0.0), 0.1));
+        assert!(aabb.intersects_sphere(&Vec3f::new(0.0, 0.0, 0.0), 10.0));
+        assert!(aabb.intersects_sphere(&Vec3f::new(2.0, 0.0, 0.0), 1.5));
+        assert!(aabb.intersects_sphere(&Vec3f::new(0.0, 2.0, 0.0), 1.5));
+        assert!(aabb.intersects_sphere(&Vec3f::new(0.0, 0.0, 2.0), 1.5));
+        assert!(aabb.intersects_sphere(&Vec3f::new(2.0, 2.0, 0.0), 1.5));
+        assert!(aabb.intersects_sphere(&Vec3f::new(0.0, 2.0, 2.0), 1.5));
+        assert!(aabb.intersects_sphere(&Vec3f::new(2.0, 0.0, 2.0), 1.5));
+        assert!(!aabb.intersects_sphere(&Vec3f::new(2.0, 0.0, 0.0), 0.9));
+        assert!(!aabb.intersects_sphere(&Vec3f::new(0.0, 2.0, 0.0), 0.9));
+        assert!(!aabb.intersects_sphere(&Vec3f::new(0.0, 0.0, 2.0), 0.9));
+        assert!(!aabb.intersects_sphere(&Vec3f::new(2.0, 2.0, 0.0), 0.9));
+        assert!(!aabb.intersects_sphere(&Vec3f::new(0.0, 2.0, 2.0), 0.9));
+        assert!(!aabb.intersects_sphere(&Vec3f::new(2.0, 0.0, 2.0), 0.9));
+        assert!(aabb.intersects_sphere(&Vec3f::new(-2.0, 0.0, 0.0), 1.5));
+        assert!(aabb.intersects_sphere(&Vec3f::new(0.0, -2.0, 0.0), 1.5));
+        assert!(aabb.intersects_sphere(&Vec3f::new(0.0, 0.0, -2.0), 1.5));
+        assert!(aabb.intersects_sphere(&Vec3f::new(-2.0, -2.0, 0.0), 1.5));
+        assert!(aabb.intersects_sphere(&Vec3f::new(0.0, -2.0, -2.0), 1.5));
+        assert!(aabb.intersects_sphere(&Vec3f::new(-2.0, 0.0, -2.0), 1.5));
+        assert!(!aabb.intersects_sphere(&Vec3f::new(-2.0, 0.0, 0.0), 0.9));
+        assert!(!aabb.intersects_sphere(&Vec3f::new(0.0, -2.0, 0.0), 0.9));
+        assert!(!aabb.intersects_sphere(&Vec3f::new(0.0, 0.0, -2.0), 0.9));
+        assert!(!aabb.intersects_sphere(&Vec3f::new(-2.0, -2.0, 0.0), 0.9));
+        assert!(!aabb.intersects_sphere(&Vec3f::new(0.0, -2.0, -2.0), 0.9));
+        assert!(!aabb.intersects_sphere(&Vec3f::new(-2.0, 0.0, -2.0), 0.9));
+    }
+}
