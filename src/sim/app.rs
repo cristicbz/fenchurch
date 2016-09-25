@@ -1,5 +1,5 @@
 use gfx::{Window, WindowOptions, Camera, Input, Gesture, Scancode};
-use math::{Vec3f, Mat4};
+use math::{vec3, Vec3f, Mat4};
 use rand::{self, Rng};
 use super::controller::{Controller, ControllerBindings};
 use super::errors::{Result, ChainErr};
@@ -48,14 +48,14 @@ impl App {
         let input = try!(Input::new(&window).chain_err(|| "Failed to create input."));
         let mut camera = Camera::new(75.0, window.aspect_ratio(), 0.1, 100.0);
         let mut timers = FrameTimers::new();
-        camera.set_position(Vec3f::new(5.9232, 6.990, 15.044));
+        camera.set_position(vec3(5.9232, 6.990, 15.044));
         camera.set_yaw(-0.5519);
         camera.set_pitch(0.2919);
 
 
         let world_mesh = try!(Heightmap::read("/home/ccc/HMquest03.png", 0.25)
                 .chain_err(|| "Failed to load height map."))
-            .build_mesh(Vec3f::zero(), Vec3f::new(40.0, 15.0, 40.0));
+            .build_mesh(Vec3f::zero(), vec3(40.0, 15.0, 40.0));
         let world_mesh_id = try!(mesh_renderer.add(&window, &world_mesh)
             .chain_err(|| "Could not create world mesh."));
 
@@ -88,22 +88,22 @@ impl App {
         let num_spheres = 50_000;
         let mut rng = rand::ChaChaRng::new_unseeded();
         for _ in 0..num_spheres {
-            let position = Vec3f::new((rng.gen::<f32>() - 0.5) * 2.0 * 1.5,
-                                      rng.gen::<f32>() * 20.0 + 6.0,
-                                      (rng.gen::<f32>() - 0.5) * 2.0 * 1.5);
-            let velocity = Vec3f::new((rng.gen::<f32>() - 0.5) * 30.,
-                                      (rng.gen::<f32>() - 0.5) * 30.,
-                                      (rng.gen::<f32>() - 0.5) * 30.0);
+            let position = vec3((rng.gen::<f32>() - 0.5) * 2.0 * 1.5,
+                                rng.gen::<f32>() * 20.0 + 6.0,
+                                (rng.gen::<f32>() - 0.5) * 2.0 * 1.5);
+            let velocity = vec3((rng.gen::<f32>() - 0.5) * 30.,
+                                (rng.gen::<f32>() - 0.5) * 30.,
+                                (rng.gen::<f32>() - 0.5) * 30.0);
             self.simulation.add(NewEntity {
                 position: position,
                 velocity: velocity,
                 mass: 1.0,
                 radius: 0.1,
-                colour: Vec3f::new(1.0, 0.4, 0.05) * (rng.gen::<f32>() + 1.0) * 0.5,
+                colour: vec3(1.0, 0.4, 0.05) * (rng.gen::<f32>() + 1.0) * 0.5,
             });
         }
         let meshes = [self.world_mesh_id];
-        let colours = [Vec3f::new(0.0, 0.3, 0.4)];
+        let colours = [vec3(0.0, 0.3, 0.4)];
         let transforms = [Mat4::identity()];
 
         info!("Entering main loop...");
@@ -111,18 +111,18 @@ impl App {
         let start_instant = Instant::now();
         while running {
             for _ in self.simulation.len()..num_spheres {
-                let position = Vec3f::new((rng.gen::<f32>() - 0.5) * 2.0 * 1.5,
-                                          rng.gen::<f32>() * 0.1 + 6.0,
-                                          (rng.gen::<f32>() - 0.5) * 2.0 * 1.5);
-                let velocity = Vec3f::new((rng.gen::<f32>() - 0.5) * 10.,
-                                          (rng.gen::<f32>() - 0.5) * 5. + 5.0,
-                                          (rng.gen::<f32>() - 0.5) * 10.0);
+                let position = vec3((rng.gen::<f32>() - 0.5) * 2.0 * 1.5,
+                                    rng.gen::<f32>() * 0.1 + 6.0,
+                                    (rng.gen::<f32>() - 0.5) * 2.0 * 1.5);
+                let velocity = vec3((rng.gen::<f32>() - 0.5) * 10.,
+                                    (rng.gen::<f32>() - 0.5) * 5. + 5.0,
+                                    (rng.gen::<f32>() - 0.5) * 10.0);
                 self.simulation.add(NewEntity {
                     position: position,
                     velocity: velocity,
                     mass: 1.0,
                     radius: 0.1,
-                    colour: Vec3f::new(1.0, 0.4, 0.05) * (rng.gen::<f32>() + 1.0) * 0.5,
+                    colour: vec3(1.0, 0.4, 0.05) * (rng.gen::<f32>() + 1.0) * 0.5,
                 });
             }
 

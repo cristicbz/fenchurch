@@ -148,7 +148,7 @@ impl Camera {
 #[cfg(test)]
 mod test {
     use super::Camera;
-    use math::{Mat4, Vec3f};
+    use math::{Mat4, vec3};
 
     #[test]
     fn projection() {
@@ -179,25 +179,23 @@ mod test {
         camera.set_yaw(0.0);
         camera.set_pitch(0.0);
         camera.set_roll(0.0);
-        camera.set_position(Vec3f::new(0.0, 0.0, 0.0));
+        camera.set_position(vec3(0.0, 0.0, 0.0));
         assert_eq!(camera.yaw(), 0.0);
         assert_eq!(camera.pitch(), 0.0);
         assert_eq!(camera.roll(), 0.0);
-        assert_eq!(camera.position(), &Vec3f::new(0.0, 0.0, 0.0));
+        assert_eq!(camera.position(), &vec3(0.0, 0.0, 0.0));
 
         camera.set_yaw(1.0);
         camera.set_pitch(2.0);
         camera.set_roll(3.0);
-        camera.set_position(Vec3f::new(4.0, 5.0, 6.0));
+        camera.set_position(vec3(4.0, 5.0, 6.0));
         assert_eq!(camera.yaw(), 1.0);
         assert_eq!(camera.pitch(), 2.0);
         assert_eq!(camera.roll(), 3.0);
-        assert_eq!(camera.position(), &Vec3f::new(4.0, 5.0, 6.0));
+        assert_eq!(camera.position(), &vec3(4.0, 5.0, 6.0));
 
         assert!(camera.modelview().approx_eq(&(Mat4::new_euler_rotation(1.0, 2.0, 3.0) *
-                                               Mat4::new_translation(Vec3f::new(-4.0,
-                                                                                -5.0,
-                                                                                -6.0))),
+                                               Mat4::new_translation(vec3(-4.0, -5.0, -6.0))),
                                              1e-16));
     }
 }

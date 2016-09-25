@@ -1,5 +1,5 @@
 use idcontain::{IdVec, Id};
-use math::{Vec3f, Vector, Aabb};
+use math::{vec3, Vec3f, Vector, Aabb};
 use num::Zero;
 use std::f32::consts;
 use super::bvh::{Bvh, Options as BvhOptions, MinLeaves, Two, Four, Six, Sixteen,
@@ -226,10 +226,10 @@ impl Simulation {
                     let speed = velocity.norm();
                     let drag = speed * consts::PI * radius * radius * DRAG_COEFFICIENT;
                     *force -= *velocity * drag;
-                    *force += Vec3f::new(0.0, -GRAVITY, 0.0);
+                    *force += vec3(0.0, -GRAVITY, 0.0);
 
                     if explode {
-                        let direction = *position - Vec3f::new(-5.0, 2.0, 5.0);
+                        let direction = *position - vec3(-5.0, 2.0, 5.0);
                         let distance_squared = direction.squared_norm().max(1.0);
                         let distance = distance_squared.sqrt();
                         *force += direction * EXPLODE / (distance_squared * distance);

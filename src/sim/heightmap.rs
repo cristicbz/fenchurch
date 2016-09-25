@@ -1,4 +1,4 @@
-use math::Vec3f;
+use math::{Vec3f, vec3};
 use sdl2_image::LoadSurface;
 use sdl2::surface::Surface;
 use sdl2::pixels::PixelFormatEnum;
@@ -32,9 +32,9 @@ impl Heightmap {
         for y in 0..height {
             for x in 0..width {
                 vertices.push(MeshVertex {
-                    position: Vec3f::new(x as f32 / (width - 1) as f32 * 2.0 - 1.0,
-                                         data[y * width + x],
-                                         y as f32 / (height - 1) as f32 * 2.0 - 1.0) *
+                    position: vec3(x as f32 / (width - 1) as f32 * 2.0 - 1.0,
+                                   data[y * width + x],
+                                   y as f32 / (height - 1) as f32 * 2.0 - 1.0) *
                               size + centre,
                     normal: Vec3f::zero(),
                 });

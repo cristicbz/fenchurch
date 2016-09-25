@@ -5,7 +5,7 @@ pub mod contact;
 mod aabb;
 
 pub use self::mat::Mat4;
-pub use self::vector::{Vector, Field, Vec2, Vec2f, Vec3, Vec3f, Vec4, Vec4f};
+pub use self::vector::{vec2, vec3, vec4, Vector, Field, Vec2, Vec2f, Vec3, Vec3f, Vec4, Vec4f};
 pub use self::aabb::Aabb;
 pub use self::contact::ContactInfo;
 pub use self::sphere::Sphere;

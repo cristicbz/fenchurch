@@ -1,6 +1,6 @@
 use num::Zero;
 use super::contact::ContactInfo;
-use super::vector::{Vec2f, Vec3f, Vector};
+use super::vector::{vec3, Vec2f, Vec3f, Vector};
 
 pub struct Sphere {
     pub center: Vec3f,
@@ -85,9 +85,9 @@ impl Sphere {
             let circle_center_to_on_line = (on_line - circle_center).normalized();
             let candidate = circle_center_to_on_line * circle_radius + circle_center;
 
-            let edge_normal_abs = Vec3f::new(edge_normal[0].abs(),
-                                             edge_normal[1].abs(),
-                                             edge_normal[2].abs());
+            let edge_normal_abs = vec3(edge_normal[0].abs(),
+                                       edge_normal[1].abs(),
+                                       edge_normal[2].abs());
             let (dim1, dim2) = if edge_normal_abs[0] > edge_normal_abs[1] &&
                                   edge_normal_abs[0] > edge_normal_abs[2] {
                 (1, 2)

@@ -1,5 +1,5 @@
 use gfx::{Camera, Input, Analog2d, Gesture, Scancode, MouseButton};
-use math::{Vector, Vec3f, clamp};
+use math::{vec3, Vector, clamp};
 use std::f32::consts::FRAC_PI_2;
 
 pub struct ControllerBindings {
@@ -77,11 +77,10 @@ impl Controller {
         camera.set_pitch(pitch);
 
         let up = if jump { 0.5 } else { 0.0 };
-        let movement =
-            Vec3f::new(yaw.cos() * movement[0] + yaw.sin() * movement[1] * pitch.cos(),
-                       -pitch.sin() * movement[1] + up,
-                       -yaw.cos() * movement[1] * pitch.cos() + yaw.sin() * movement[0])
-                .normalized() * self.move_speed * delta_time;
+        let movement = vec3(yaw.cos() * movement[0] + yaw.sin() * movement[1] * pitch.cos(),
+                            -pitch.sin() * movement[1] + up,
+                            -yaw.cos() * movement[1] * pitch.cos() + yaw.sin() * movement[0])
+            .normalized() * self.move_speed * delta_time;
         camera.move_by(movement);
     }
 }

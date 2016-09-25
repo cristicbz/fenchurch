@@ -1,4 +1,4 @@
-use math::{Vec3f, Mat4};
+use math::{vec3, Vec3f, Mat4};
 
 #[derive(Clone)]
 pub struct Light {
@@ -28,18 +28,18 @@ impl Default for Lights {
     fn default() -> Self {
         Lights {
             key: Light {
-                direction: Vec3f::new(0.0, 1.0, 1.0),
-                colour: Vec3f::new(1.0, 1.0, 1.0) * 0.5,
+                direction: vec3(0.0, 1.0, 1.0),
+                colour: vec3(1.0, 1.0, 1.0) * 0.5,
             },
             fill: Light {
-                direction: Vec3f::new(1.0, 1.0, 0.0),
-                colour: Vec3f::new(1.0, 0.8, 0.7) * 0.4,
+                direction: vec3(1.0, 1.0, 0.0),
+                colour: vec3(1.0, 0.8, 0.7) * 0.4,
             },
             back: Light {
-                direction: Vec3f::new(-1.0, -1.0, 0.0),
-                colour: Vec3f::new(0.7, 0.8, 1.0) * 0.1,
+                direction: vec3(-1.0, -1.0, 0.0),
+                colour: vec3(0.7, 0.8, 1.0) * 0.1,
             },
-            ambient: Vec3f::new(0.2, 1.0, 1.0) * 0.05,
+            ambient: vec3(0.2, 1.0, 1.0) * 0.05,
         }
     }
 }

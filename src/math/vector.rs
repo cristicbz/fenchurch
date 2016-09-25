@@ -1,6 +1,20 @@
 use num::{Float, One, Zero};
 use std::ops::{Add, Div, Index, IndexMut, Mul, Neg, Sub, AddAssign, MulAssign, DivAssign,
                SubAssign};
+#[inline]
+pub fn vec2<S: Field>(x: S, y: S) -> Vec2<S> {
+    Vec2::new(x, y)
+}
+
+#[inline]
+pub fn vec3<S: Field>(x: S, y: S, z: S) -> Vec3<S> {
+    Vec3::new(x, y, z)
+}
+
+#[inline]
+pub fn vec4<S: Field>(x: S, y: S, z: S, w: S) -> Vec4<S> {
+    Vec4::new(x, y, z, w)
+}
 
 pub type Vec2f = Vec2<f32>;
 pub type Vec3f = Vec3<f32>;
