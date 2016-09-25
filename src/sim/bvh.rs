@@ -5,101 +5,62 @@ use std::marker::PhantomData;
 use std::mem;
 use super::atomic_mut_indexer::AtomicMutIndexer;
 
-pub enum Two {}
-pub enum Four {}
-pub enum Six {}
-pub enum Eight {}
-pub enum Sixteen {}
-
 pub trait SpecifyNumber {
-    #[inline]
     fn specify_number() -> usize;
-}
-impl SpecifyNumber for Two {
-    #[inline]
-    fn specify_number() -> usize {
-        2
-    }
-}
-impl SpecifyNumber for Four {
-    #[inline]
-    fn specify_number() -> usize {
-        4
-    }
-}
-impl SpecifyNumber for Six {
-    #[inline]
-    fn specify_number() -> usize {
-        6
-    }
-}
-impl SpecifyNumber for Eight {
-    #[inline]
-    fn specify_number() -> usize {
-        8
-    }
-}
-impl SpecifyNumber for Sixteen {
-    #[inline]
-    fn specify_number() -> usize {
-        16
-    }
 }
 
 pub trait Array<T: Copy + Sync + Send>: AsRef<[T]> + AsMut<[T]> + Sync + Send {
     fn of(value: T) -> Self;
 }
-impl<T: Copy + Sync + Send> Array<T> for [T; 2] {
-    #[inline]
-    fn of(value: T) -> Self {
-        [value; 2]
-    }
-}
-impl<T: Copy + Sync + Send> Array<T> for [T; 4] {
-    #[inline]
-    fn of(value: T) -> Self {
-        [value; 4]
-    }
-}
-impl<T: Copy + Sync + Send> Array<T> for [T; 6] {
-    #[inline]
-    fn of(value: T) -> Self {
-        [value; 6]
-    }
-}
-impl<T: Copy + Sync + Send> Array<T> for [T; 8] {
-    #[inline]
-    fn of(value: T) -> Self {
-        [value; 8]
-    }
-}
-impl<T: Copy + Sync + Send> Array<T> for [T; 16] {
-    #[inline]
-    fn of(value: T) -> Self {
-        [value; 16]
-    }
-}
-
 
 pub trait SpecifyArraySize<T: Copy + Sync + Send> {
     type ArrayOfSize: Array<T>;
 }
 
-impl<T: Copy + Sync + Send> SpecifyArraySize<T> for Two {
-    type ArrayOfSize = [T; 2];
+macro_rules! impl_numbers {
+    ($(#[number_value($value:expr)] pub enum $name:ident {})+) => {
+        $(
+            #[allow(unused)]
+            pub enum $name {}
+
+            impl SpecifyNumber for $name {
+                #[inline]
+                fn specify_number() -> usize {
+                    $value
+                }
+            }
+
+            impl<T: Copy + Sync + Send> Array<T> for [T; $value] {
+                #[inline]
+                fn of(value: T) -> Self {
+                    [value; $value]
+                }
+            }
+
+            impl<T: Copy + Sync + Send> SpecifyArraySize<T> for $name {
+                type ArrayOfSize = [T; $value];
+            }
+        )+
+    }
 }
-impl<T: Copy + Sync + Send> SpecifyArraySize<T> for Four {
-    type ArrayOfSize = [T; 4];
+
+impl_numbers! {
+    #[number_value(2)]
+    pub enum Two {}
+
+    #[number_value(4)]
+    pub enum Four {}
+
+    #[number_value(6)]
+    pub enum Six {}
+
+    #[number_value(8)]
+    pub enum Eight {}
+
+    #[number_value(16)]
+    pub enum Sixteen {}
 }
-impl<T: Copy + Sync + Send> SpecifyArraySize<T> for Six {
-    type ArrayOfSize = [T; 6];
-}
-impl<T: Copy + Sync + Send> SpecifyArraySize<T> for Eight {
-    type ArrayOfSize = [T; 8];
-}
-impl<T: Copy + Sync + Send> SpecifyArraySize<T> for Sixteen {
-    type ArrayOfSize = [T; 16];
-}
+
 
 pub struct MinLeaves<N: SpecifyNumber>(PhantomData<N>);
 pub trait SpecifyMinLeaves {
