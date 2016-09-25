@@ -374,10 +374,11 @@ impl Triangle {
 }
 
 const DRAG_COEFFICIENT: f32 = 1.0;
-const COMPRESS: f32 = 1000.0;
+const COMPRESS: f32 = 3000.0;
 const EXPLODE: f32 = 500.0;
 const GRAVITY: f32 = 20.0;
 
+#[inline]
 fn ray_triangle(origin: &Vec3f, direction: &Vec3f, vertices: &[Vec3f]) -> Option<f32> {
     let u = vertices[1] - vertices[0];
     let v = vertices[2] - vertices[0];
