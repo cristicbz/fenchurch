@@ -143,7 +143,8 @@ pub struct Options<MinLeaves: SpecifyMinLeaves, Heuristic: PartitionHeuristic> {
     _phantom: PhantomData<(MinLeaves, Heuristic)>,
 }
 
-impl<MinLeaves: SpecifyMinLeaves, Heuristic: PartitionHeuristic> SpecifyOptions for Options<MinLeaves, Heuristic> {
+impl<MinLeaves: SpecifyMinLeaves, Heuristic: PartitionHeuristic> SpecifyOptions
+        for Options<MinLeaves, Heuristic> {
     type MinLeaves = MinLeaves;
     type Heuristic = Heuristic;
 }

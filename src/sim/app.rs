@@ -88,12 +88,12 @@ impl App {
         let num_spheres = 50_000;
         let mut rng = rand::ChaChaRng::new_unseeded();
         for _ in 0..num_spheres {
-            let position = vec3((rng.gen::<f32>() - 0.5) * 2.0 * 1.5,
-                                rng.gen::<f32>() * 20.0 + 6.0,
-                                (rng.gen::<f32>() - 0.5) * 2.0 * 1.5);
-            let velocity = vec3((rng.gen::<f32>() - 0.5) * 30.,
-                                (rng.gen::<f32>() - 0.5) * 30.,
-                                (rng.gen::<f32>() - 0.5) * 30.0);
+            let position = vec3((rng.gen::<f32>() - 0.5) * 2.0 * 5.0,
+                                rng.gen::<f32>() * 3.0 + 7.0,
+                                (rng.gen::<f32>() - 0.5) * 2.0 * 5.0);
+            let velocity = vec3((rng.gen::<f32>() - 0.5) * 2.0 * 15.,
+                                rng.gen::<f32>() * 15.,
+                                (rng.gen::<f32>() - 0.5) * 2.0 * 15.0);
             self.simulation.add(NewEntity {
                 position: position,
                 velocity: velocity,
@@ -111,11 +111,11 @@ impl App {
         let start_instant = Instant::now();
         while running {
             for _ in self.simulation.len()..num_spheres {
-                let position = vec3((rng.gen::<f32>() - 0.5) * 2.0 * 1.5,
+                let position = vec3((rng.gen::<f32>() - 0.5) * 2.0 * 1.5 + 1.0,
                                     rng.gen::<f32>() * 0.1 + 6.0,
                                     (rng.gen::<f32>() - 0.5) * 2.0 * 1.5);
                 let velocity = vec3((rng.gen::<f32>() - 0.5) * 10.,
-                                    (rng.gen::<f32>() - 0.5) * 5. + 5.0,
+                                    rng.gen::<f32>() * 5. + 5.0,
                                     (rng.gen::<f32>() - 0.5) * 10.0);
                 self.simulation.add(NewEntity {
                     position: position,

@@ -10,19 +10,22 @@ use super::mesh_renderer::Mesh;
 use parking_lot::Mutex;
 
 
+type SphereBvh = Bvh<BvhOptions<MinLeaves<Six>, BinnedSahPartition<Four, TotalAabbLimit>>>;
+type WorldBvh = Bvh<BvhOptions<MinLeaves<Two>, BinnedSahPartition<Sixteen, CentroidAabbLimit>>>;
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct EntityId(Id<ComponentIndexes>);
+pub struct EntityId(Id<ComponentIndex>);
 
 pub struct Simulation {
-    entities: IdVec<ComponentIndexes>,
+    entities: IdVec<ComponentIndex>,
 
     bvh_timer: FrameTimerId,
     forces_timer: FrameTimerId,
     positions_timer: FrameTimerId,
 
-    sphere_bvh: Bvh<BvhOptions<MinLeaves<Six>, BinnedSahPartition<Four, TotalAabbLimit>>>,
+    sphere_bvh: SphereBvh,
 
-    world_bvh: Bvh<BvhOptions<MinLeaves<Two>, BinnedSahPartition<Sixteen, CentroidAabbLimit>>>,
+    world_bvh: WorldBvh,
     world_triangles: Vec<Triangle>,
 
     timestep: f32,
@@ -34,7 +37,7 @@ pub struct Simulation {
     reverse_lookup: Vec<EntityId>,
     velocities: Vec<Vec3f>,
 
-    minus_forces: Vec<Mutex<Vec3f>>,
+    other_forces: Vec<Mutex<Vec3f>>,
 
     explode: bool,
 }
@@ -48,8 +51,8 @@ pub struct NewEntity {
     pub colour: Vec3f,
 }
 
-struct ComponentIndexes {
-    base: u32,
+struct ComponentIndex {
+    index: u32,
 }
 
 impl Simulation {
@@ -88,7 +91,7 @@ impl Simulation {
 
             colours: Vec::with_capacity(capacity),
             forces: Vec::with_capacity(capacity),
-            minus_forces: Vec::with_capacity(capacity),
+            other_forces: Vec::with_capacity(capacity),
             masses: Vec::with_capacity(capacity),
             positions: Vec::with_capacity(capacity),
             radii: Vec::with_capacity(capacity),
@@ -100,12 +103,12 @@ impl Simulation {
     }
 
     pub fn add(&mut self, entity: NewEntity) -> EntityId {
-        let base_index = self.len() as u32;
-        let id = EntityId(self.entities.insert(ComponentIndexes { base: base_index }));
+        let index_index = self.len() as u32;
+        let id = EntityId(self.entities.insert(ComponentIndex { index: index_index }));
 
         self.colours.push(entity.colour);
         self.forces.push(Vec3f::zero());
-        self.minus_forces.push(Mutex::new(Vec3f::zero()));
+        self.other_forces.push(Mutex::new(Vec3f::zero()));
         self.masses.push(entity.mass);
         self.positions.push(entity.position);
         self.radii.push(entity.radius);
@@ -115,29 +118,18 @@ impl Simulation {
     }
 
     pub fn remove(&mut self, id: EntityId) -> bool {
-        if let Some(ComponentIndexes { base: u32_index }) = self.entities.remove(id.0) {
-            let swap_index = self.len() - 1;
-            let index = u32_index as usize;
-            if swap_index == index {
-                self.colours.pop();
-                self.forces.pop();
-                self.minus_forces.pop();
-                self.masses.pop();
-                self.positions.pop();
-                self.radii.pop();
-                self.reverse_lookup.pop();
-                self.velocities.pop();
-            } else {
-                self.colours.swap_remove(index);
-                self.forces.swap_remove(index);
-                self.minus_forces.swap_remove(index);
-                self.masses.swap_remove(index);
-                self.positions.swap_remove(index);
-                self.radii.swap_remove(index);
-                self.reverse_lookup.swap_remove(index);
-                self.velocities.swap_remove(index);
-
-                self.entities[self.reverse_lookup[index].0].base = u32_index;
+        if let Some(ComponentIndex { index }) = self.entities.remove(id.0) {
+            let index = index as usize;
+            self.colours.swap_remove(index);
+            self.forces.swap_remove(index);
+            self.other_forces.swap_remove(index);
+            self.masses.swap_remove(index);
+            self.positions.swap_remove(index);
+            self.radii.swap_remove(index);
+            self.reverse_lookup.swap_remove(index);
+            self.velocities.swap_remove(index);
+            if index < self.reverse_lookup.len() {
+                self.entities[self.reverse_lookup[index].0].index = index as u32;
             }
             true
         } else {
@@ -194,76 +186,65 @@ impl Simulation {
     fn zero_forces(&mut self) {
         self.forces.clear();
         self.forces.resize(self.positions.len(), Vec3f::zero());
-        for force in &mut self.minus_forces {
+        for force in &mut self.other_forces {
             *force.get_mut() = Vec3f::zero();
         }
     }
 
     fn compute_forces(&mut self) {
         let Simulation { ref mut forces,
-                         ref mut minus_forces,
+                         ref mut other_forces,
                          ref positions,
                          ref velocities,
                          ref radii,
                          ref sphere_bvh,
-                         explode,
                          timestep,
                          .. } = *self;
         let len = positions.len();
         assert!(forces.len() == len);
         assert!(velocities.len() == len);
         assert!(radii.len() == len);
-        assert!(minus_forces.len() == len);
+        assert!(other_forces.len() == len);
 
-        {
-            let locking_minus_forces: &[Mutex<Vec3f>] = &*minus_forces;
-            forces.par_iter_mut()
-                .enumerate()
-                .zip(positions)
-                .zip(velocities)
-                .zip(radii)
-                .for_each(|((((i_body, force), position), velocity), &radius)| {
-                    let speed = velocity.norm();
-                    let drag = speed * consts::PI * radius * radius * DRAG_COEFFICIENT;
-                    *force -= *velocity * drag;
-                    *force += vec3(0.0, -GRAVITY, 0.0);
+        forces.par_iter_mut()
+            .enumerate()
+            .zip(positions)
+            .zip(velocities)
+            .zip(radii)
+            .for_each(|((((i_body, force), position), velocity), &radius)| {
+                let speed = velocity.norm();
+                let drag = speed * consts::PI * radius * radius * DRAG_COEFFICIENT;
+                *force -= *velocity * drag;
+                *force += vec3(0.0, -GRAVITY, 0.0);
 
-                    if explode {
-                        let direction = *position - vec3(-5.0, 2.0, 5.0);
-                        let distance_squared = direction.squared_norm().max(1.0);
-                        let distance = distance_squared.sqrt();
-                        *force += direction * EXPLODE / (distance_squared * distance);
-                    }
+                sphere_bvh.on_sphere_intersection(position, radius, i_body + 1, |j_body| {
+                    let other_position = &positions[j_body];
+                    let other_radius = radii[j_body];
 
-                    sphere_bvh.on_sphere_intersection(position, radius, i_body + 1, |j_body| {
-                        let other_position = &positions[j_body];
-                        let other_radius = radii[j_body];
+                    let direction = *position - *other_position;
+                    let min_distance = radius + other_radius;
+                    let squared_distance = direction.squared_norm();
+                    if squared_distance < min_distance * min_distance {
+                        let other_velocity = &velocities[j_body];
+                        let distance = squared_distance.sqrt() + 1e-8;
+                        let correction = (min_distance / distance - 1.0) * COMPRESS * 0.5;
 
-                        let direction = *position - *other_position;
-                        let min_distance = radius + other_radius;
-                        let squared_distance = direction.squared_norm();
-                        if squared_distance < min_distance * min_distance {
-                            let other_velocity = &velocities[j_body];
-                            let distance = squared_distance.sqrt() + 1e-8;
-                            let correction = (min_distance / distance - 1.0) * COMPRESS * 0.5;
-
-                            let relative = *velocity - *other_velocity;
-                            let normal_dot = relative.dot(&direction) / distance;
-                            if normal_dot < 0.0 {
-                                let normal_dot = normal_dot.max(-0.5 / (timestep * 0.5));
-                                *force += relative * normal_dot * 1.0;
-                            }
-
-                            let new_force = direction * correction;
-                            *force += new_force;
-                            *locking_minus_forces[j_body].lock() += new_force;
+                        let relative = *velocity - *other_velocity;
+                        let normal_dot = relative.dot(&direction) / distance;
+                        if normal_dot < 0.0 {
+                            let normal_dot = normal_dot.max(-0.5 / (timestep * 0.5));
+                            *force += relative * normal_dot * 1.0;
                         }
-                    });
-                });
-        }
 
-        forces.par_iter_mut().zip(minus_forces.par_iter_mut()).for_each(|(force, minus_force)| {
-            *force -= *minus_force.get_mut();
+                        let new_force = direction * correction;
+                        *force += new_force;
+                        *(&other_forces[j_body]).lock() -= new_force;
+                    }
+                });
+            });
+
+        forces.par_iter_mut().zip(other_forces.par_iter_mut()).for_each(|(force, other_force)| {
+            *force += *other_force.get_mut();
         });
     }
 
@@ -337,23 +318,20 @@ impl Simulation {
     }
 
     fn remove_outliers(&mut self) {
-        let mut removals = Vec::new();
-        for (i_position, position) in self.positions.iter_mut().enumerate() {
-            if position[1] < -5.0 {
-                removals.push(self.reverse_lookup[i_position]);
+        assert_eq!(self.positions.len(), self.reverse_lookup.len());
+        for i_position in (0..self.positions.len()).rev() {
+            if self.positions[i_position][1] < -5.0 {
+                let entity_id = self.reverse_lookup[i_position];
+                self.remove(entity_id);
             }
-        }
-
-        for removal in removals {
-            self.remove(removal);
         }
     }
 }
 
+
 fn deborrow<T>(value: T) -> T {
     value
 }
-
 
 struct Triangle {
     vertices: [Vec3f; 3],
@@ -375,7 +353,6 @@ impl Triangle {
 
 const DRAG_COEFFICIENT: f32 = 1.0;
 const COMPRESS: f32 = 3000.0;
-const EXPLODE: f32 = 500.0;
 const GRAVITY: f32 = 20.0;
 
 #[inline]
