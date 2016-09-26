@@ -4,6 +4,7 @@ name = "fenchurch"
 version = "0.1.0"
 
 [dependencies]
+crossbeam = "0.2.10"
 env_logger = "0.3.4"
 error-chain = "0.5.0"
 glium = "0.15.0"

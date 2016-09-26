@@ -38,8 +38,6 @@ pub struct Simulation {
     velocities: Vec<Vec3f>,
 
     other_forces: Vec<Mutex<Vec3f>>,
-
-    explode: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -97,8 +95,6 @@ impl Simulation {
             radii: Vec::with_capacity(capacity),
             reverse_lookup: Vec::with_capacity(capacity),
             velocities: Vec::with_capacity(capacity),
-
-            explode: false,
         }
     }
 
@@ -149,10 +145,6 @@ impl Simulation {
         &self.radii
     }
 
-    pub fn explode(&mut self) {
-        self.explode = true;
-    }
-
     pub fn update(&mut self, timers: &mut FrameTimers, _delta_time: f32) {
         self.velocities_halfstep();
         timers.start(self.positions_timer);
@@ -167,8 +159,6 @@ impl Simulation {
         self.compute_forces();
         timers.stop(self.forces_timer);
         self.velocities_halfstep();
-
-        self.explode = false;
     }
 
     pub fn update_bvh(&mut self) {

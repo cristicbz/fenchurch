@@ -1,15 +1,18 @@
+use crossbeam;
 use gfx::{Window, WindowOptions, Camera, Input, Gesture, Scancode};
 use math::{vec3, Vec3f, Mat4};
+use num::Zero;
 use rand::{self, Rng};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 use super::controller::{Controller, ControllerBindings};
 use super::errors::{Result, ChainErr};
 use super::frame_timers::{FrameTimers, FrameTimerId};
+use super::heightmap::Heightmap;
 use super::mesh_renderer::{MeshRenderer, MeshId, MeshList};
 use super::simulation::{Simulation, NewEntity};
+use super::snapshot::Snapshot;
 use super::sphere_renderer::{SphereRenderer, SphereList};
-use super::heightmap::Heightmap;
-use num::Zero;
-use std::time::Instant;
 
 
 pub struct App {
@@ -20,16 +23,24 @@ pub struct App {
     camera: Camera,
     controller: Controller,
     timers: FrameTimers,
+    sim_timers: FrameTimers,
 
     simulation: Simulation,
 
     frame_timer: FrameTimerId,
     cpu_timer: FrameTimerId,
     render_timer: FrameTimerId,
-    sim_timer: FrameTimerId,
 
     world_mesh_id: MeshId,
 }
+
+#[derive(Clone)]
+struct SimData {
+    positions: Vec<Vec3f>,
+    radii: Vec<f32>,
+    colours: Vec<Vec3f>,
+}
+
 
 impl App {
     pub fn new() -> Result<Self> {
@@ -59,7 +70,8 @@ impl App {
         let world_mesh_id = try!(mesh_renderer.add(&window, &world_mesh)
             .chain_err(|| "Could not create world mesh."));
 
-        let simulation = Simulation::with_capacity(&mut timers, 16384, &world_mesh);
+        let mut sim_timers = FrameTimers::new();
+        let simulation = Simulation::with_capacity(&mut sim_timers, 16384, &world_mesh);
 
         Ok(App {
             window: window,
@@ -72,29 +84,30 @@ impl App {
             frame_timer: timers.new_stopped("frame"),
             cpu_timer: timers.new_stopped("cpu"),
             render_timer: timers.new_stopped("render"),
-            sim_timer: timers.new_stopped("sim"),
             timers: timers,
+            sim_timers: sim_timers,
 
             world_mesh_id: world_mesh_id,
             simulation: simulation,
         })
     }
 
-    pub fn run(mut self) -> Result<()> {
-        let quit_gesture = Gesture::AnyOf(vec![Gesture::QuitTrigger,
-                                               Gesture::KeyTrigger(Scancode::Escape)]);
-        let explode_gesture = Gesture::KeyHold(Scancode::E);
-
+    fn simulation_thread(timers: &mut FrameTimers,
+                         simulation: &mut Simulation,
+                         sim_data: &Snapshot<SimData>,
+                         running: &AtomicBool) {
         let num_spheres = 50_000;
         let mut rng = rand::ChaChaRng::new_unseeded();
+        let sim_timer = timers.new_stopped("sim");
+
         for _ in 0..num_spheres {
-            let position = vec3((rng.gen::<f32>() - 0.5) * 2.0 * 5.0,
-                                rng.gen::<f32>() * 3.0 + 7.0,
-                                (rng.gen::<f32>() - 0.5) * 2.0 * 5.0);
+            let position = vec3((rng.gen::<f32>() - 0.5) * 2.0 * 10.0,
+                                rng.gen::<f32>() * 12.0 + 7.0,
+                                (rng.gen::<f32>() - 0.5) * 2.0 * 10.0);
             let velocity = vec3((rng.gen::<f32>() - 0.5) * 2.0 * 15.,
                                 rng.gen::<f32>() * 15.,
                                 (rng.gen::<f32>() - 0.5) * 2.0 * 15.0);
-            self.simulation.add(NewEntity {
+            simulation.add(NewEntity {
                 position: position,
                 velocity: velocity,
                 mass: 1.0,
@@ -102,22 +115,25 @@ impl App {
                 colour: vec3(1.0, 0.4, 0.05) * (rng.gen::<f32>() + 1.0) * 0.5,
             });
         }
-        let meshes = [self.world_mesh_id];
-        let colours = [vec3(0.0, 0.3, 0.4)];
-        let transforms = [Mat4::identity()];
+        while running.load(Ordering::Acquire) {
+            sim_data.write(|sim_data| {
+                sim_data.positions.clear();
+                sim_data.radii.clear();
+                sim_data.colours.clear();
+                sim_data.positions.extend_from_slice(simulation.positions());
+                sim_data.radii.extend_from_slice(simulation.radii());
+                sim_data.colours.extend_from_slice(simulation.colours());
+            });
 
-        info!("Entering main loop...");
-        let mut running = true;
-        let start_instant = Instant::now();
-        while running {
-            for _ in self.simulation.len()..num_spheres {
+            let delta_time = timers.start(sim_timer).unwrap_or(0.0);
+            for _ in simulation.len()..num_spheres {
                 let position = vec3((rng.gen::<f32>() - 0.5) * 2.0 * 1.5 + 1.0,
-                                    rng.gen::<f32>() * 0.1 + 6.0,
+                                    rng.gen::<f32>() * 0.1 + 10.0,
                                     (rng.gen::<f32>() - 0.5) * 2.0 * 1.5);
                 let velocity = vec3((rng.gen::<f32>() - 0.5) * 10.,
                                     rng.gen::<f32>() * 5. + 5.0,
                                     (rng.gen::<f32>() - 0.5) * 10.0);
-                self.simulation.add(NewEntity {
+                simulation.add(NewEntity {
                     position: position,
                     velocity: velocity,
                     mass: 1.0,
@@ -125,59 +141,99 @@ impl App {
                     colour: vec3(1.0, 0.4, 0.05) * (rng.gen::<f32>() + 1.0) * 0.5,
                 });
             }
-
-            let mut frame = self.window.draw();
-            let frame_result = (|| -> Result<()> {
-                let delta_time = self.timers.start(self.frame_timer).unwrap_or(1.0 / 60.0);
-                self.timers.start(self.cpu_timer);
-                self.input.update();
-
-                self.timers.start(self.render_timer);
-                try!(self.sphere_renderer
-                    .render(&self.window,
-                            &self.camera,
-                            &mut frame,
-                            SphereList {
-                                positions: self.simulation.positions(),
-                                radii: self.simulation.radii(),
-                                colours: self.simulation.colours(),
-                            })
-                    .chain_err(|| "Failed to render spheres."));
-                try!(self.mesh_renderer
-                    .render(&self.window,
-                            &self.camera,
-                            &mut frame,
-                            MeshList {
-                                ids: &meshes,
-                                colours: &colours,
-                                transforms: &transforms,
-                            })
-                    .chain_err(|| "Failed to render meshes."));
-                self.timers.stop(self.render_timer);
-
-                if self.input.poll_gesture(&quit_gesture) {
-                    running = false;
-                }
-                if self.input.poll_gesture(&explode_gesture) {
-                    self.simulation.explode();
-                }
-                self.controller.update(delta_time, &mut self.input, &mut self.camera);
-
-                self.timers.start(self.sim_timer);
-                self.simulation.update(&mut self.timers, delta_time);
-                self.timers.stop(self.sim_timer);
-
-
-                self.timers.stop(self.cpu_timer);
-                Ok(())
-            })();
-            try!(frame.finish().chain_err(|| "Context lost."));
-            try!(frame_result);
+            simulation.update(timers, delta_time);
         }
+    }
+
+    pub fn run(mut self) -> Result<()> {
+        let App { ref mut window,
+                  ref mut simulation,
+                  ref mut timers,
+                  ref mut camera,
+                  ref mut input,
+                  ref mut sphere_renderer,
+                  ref mut mesh_renderer,
+                  ref mut controller,
+                  world_mesh_id,
+                  frame_timer,
+                  cpu_timer,
+                  render_timer,
+                  ref mut sim_timers,
+                  .. } = self;
+        let quit_gesture = Gesture::AnyOf(vec![Gesture::QuitTrigger,
+                                               Gesture::KeyTrigger(Scancode::Escape)]);
+
+
+        let meshes = [world_mesh_id];
+        let colours = [vec3(0.0, 0.3, 0.4)];
+        let transforms = [Mat4::identity()];
+        let sim_data = Snapshot::new(SimData {
+            positions: Vec::new(),
+            radii: Vec::new(),
+            colours: Vec::new(),
+        });
+
+        info!("Entering main loop...");
+        let mut running = true;
+        let simulation_running_flag = AtomicBool::new(true);
+        let start_instant = Instant::now();
+        let result = crossbeam::scope(|scope| -> Result<()> {
+            scope.spawn(|| {
+                App::simulation_thread(sim_timers, simulation, &sim_data, &simulation_running_flag);
+            });
+            while running {
+                let mut frame = window.draw();
+                let frame_result = (|| -> Result<()> {
+                    let delta_time = timers.start(frame_timer).unwrap_or(1.0 / 60.0);
+                    timers.start(cpu_timer);
+                    input.update();
+
+                    timers.start(render_timer);
+                    if let Some(r) = sim_data.read(|sim_data| {
+                        sphere_renderer.render(window,
+                                    camera,
+                                    &mut frame,
+                                    Some(SphereList {
+                                        positions: &sim_data.positions,
+                                        radii: &sim_data.radii,
+                                        colours: &sim_data.colours,
+                                    }))
+                            .chain_err(|| "Failed to render spheres.")
+                    }) {
+                        try!(r);
+                    } else {
+                        try!(sphere_renderer.render(window, camera, &mut frame, None)
+                            .chain_err(|| "Failed to render spheres."));
+                    }
+
+                    try!(mesh_renderer.render(window,
+                                camera,
+                                &mut frame,
+                                MeshList {
+                                    ids: &meshes,
+                                    colours: &colours,
+                                    transforms: &transforms,
+                                })
+                        .chain_err(|| "Failed to render meshes."));
+                    timers.stop(render_timer);
+
+                    if input.poll_gesture(&quit_gesture) {
+                        running = false;
+                        simulation_running_flag.store(false, Ordering::Release);
+                    }
+                    controller.update(delta_time, input, camera);
+                    timers.stop(cpu_timer);
+                    Ok(())
+                })();
+                try!(frame.finish().chain_err(|| "Context lost."));
+                try!(frame_result);
+            }
+            Ok(())
+        });
         let runtime = start_instant.elapsed();
         let runtime = runtime.as_secs() as f64 + runtime.subsec_nanos() as f64 * 1e-9;
         info!("Ran for {:.2}s", runtime);
 
-        Ok(())
+        result
     }
 }

@@ -3,6 +3,7 @@ name = "fenchurch"
 version = "0.1.0"
 dependencies = [
  "clap 2.11.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "crossbeam 0.2.10 (registry+https://github.com/rust-lang/crates.io-index)",
  "env_logger 0.3.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "error-chain 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "glium 0.15.0 (registry+https://github.com/rust-lang/crates.io-index)",

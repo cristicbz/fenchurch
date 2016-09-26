@@ -19,6 +19,14 @@ pub struct SphereRenderer {
     program: Program,
     draw_parameters: DrawParameters<'static>,
     settings: Settings,
+    chunks: Vec<Chunk>,
+}
+
+struct Chunk {
+    positions: Texture1d,
+    radii: Texture1d,
+    colours: Texture1d,
+    size: usize,
 }
 
 pub struct Settings {
@@ -45,6 +53,7 @@ impl SphereRenderer {
         Ok(SphereRenderer {
             program: program,
             settings: settings,
+            chunks: Vec::new(),
             draw_parameters: DrawParameters {
                 depth: Depth {
                     test: DepthTest::IfLess,
@@ -57,53 +66,51 @@ impl SphereRenderer {
         })
     }
 
-    pub fn render<'a>(&self,
+    pub fn render<'a>(&mut self,
                       window: &Window,
                       camera: &Camera,
                       frame: &mut Frame,
-                      sphere_list: SphereList<'a>)
+                      sphere_list: Option<SphereList<'a>>)
                       -> Result<()> {
 
-        let SphereList { positions, radii, colours } = sphere_list;
-        let num_spheres = positions.len();
-        assert_eq!(radii.len(), num_spheres);
-        assert_eq!(colours.len(), num_spheres);
+        if let Some(SphereList { positions, radii, colours }) = sphere_list {
+            let num_spheres = positions.len();
+            assert_eq!(radii.len(), num_spheres);
+            assert_eq!(colours.len(), num_spheres);
+            assert!(positions.len() <= u32::MAX as usize);
 
-        assert!(positions.len() <= u32::MAX as usize);
-
-        let chunk_size = self.settings.chunk_size;
-        let chunks = positions.chunks(chunk_size)
-            .zip(radii.chunks(chunk_size))
-            .zip(colours.chunks(chunk_size))
-            .map(|((position_chunk, radius_chunk), colour_chunk)| {
-                SphereList {
-                    positions: position_chunk,
-                    radii: radius_chunk,
-                    colours: colour_chunk,
-                }
-            });
+            let chunk_size = self.settings.chunk_size;
+            self.chunks.clear();
+            self.chunks.reserve(num_spheres / chunk_size + 1);
+            for ((positions_chunk, radii_chunk), colours_chunk) in positions.chunks(chunk_size)
+                .zip(radii.chunks(chunk_size))
+                .zip(colours.chunks(chunk_size)) {
+                self.chunks.push(Chunk {
+                    positions: try!(Texture1d::with_format(window.facade(),
+                                                           positions_chunk,
+                                                           UncompressedFloatFormat::F32F32F32,
+                                                           MipmapsOption::NoMipmap)
+                        .chain_err(|| "Failed to build positions texture.")),
+                    radii: try!(Texture1d::with_format(window.facade(),
+                                                       radii_chunk,
+                                                       UncompressedFloatFormat::F32,
+                                                       MipmapsOption::NoMipmap)
+                        .chain_err(|| "Failed to build radii texture.")),
+                    colours: try!(Texture1d::with_format(window.facade(),
+                                                         colours_chunk,
+                                                         UncompressedFloatFormat::F32F32F32,
+                                                         MipmapsOption::NoMipmap)
+                        .chain_err(|| "Failed to build colours texture.")),
+                    size: positions_chunk.len(),
+                })
+            }
+        }
 
         let modelview = camera.modelview();
         let projection = camera.projection();
         let transformed_lights = self.settings.lights.transformed(&modelview);
 
-        for chunk in chunks {
-            let positions = try!(Texture1d::with_format(window.facade(),
-                                                        chunk.positions,
-                                                        UncompressedFloatFormat::F32F32F32,
-                                                        MipmapsOption::NoMipmap)
-                .chain_err(|| "Failed to build positions texture."));
-            let radii = try!(Texture1d::with_format(window.facade(),
-                                                    chunk.radii,
-                                                    UncompressedFloatFormat::F32,
-                                                    MipmapsOption::NoMipmap)
-                .chain_err(|| "Failed to build radii texture."));
-            let colours = try!(Texture1d::with_format(window.facade(),
-                                                      chunk.colours,
-                                                      UncompressedFloatFormat::F32F32F32,
-                                                      MipmapsOption::NoMipmap)
-                .chain_err(|| "Failed to build colours texture."));
-
+        for chunk in &self.chunks {
             let uniforms = uniform! {
                 u_modelview: &modelview,
                 u_projection: projection,
@@ -114,21 +121,21 @@ impl SphereRenderer {
                 u_back_light_direction: &transformed_lights.back.direction,
                 u_back_light_colour: &transformed_lights.back.colour,
                 u_ambient_colour: &transformed_lights.ambient,
-                u_positions: positions.sampled()
+                u_positions: chunk.positions.sampled()
                                       .magnify_filter(MagnifySamplerFilter::Nearest)
                                       .minify_filter(MinifySamplerFilter::Nearest)
                                       .wrap_function(SamplerWrapFunction::Clamp),
-                u_radii: radii.sampled()
+                u_radii: chunk.radii.sampled()
                               .magnify_filter(MagnifySamplerFilter::Nearest)
                               .minify_filter(MinifySamplerFilter::Nearest)
                               .wrap_function(SamplerWrapFunction::Clamp),
-                u_colours: colours.sampled()
+                u_colours: chunk.colours.sampled()
                                   .magnify_filter(MagnifySamplerFilter::Nearest)
                                   .minify_filter(MinifySamplerFilter::Nearest)
                                   .wrap_function(SamplerWrapFunction::Clamp),
             };
 
-            try!(frame.draw(EmptyVertexAttributes { len: chunk.positions.len() * 6 },
+            try!(frame.draw(EmptyVertexAttributes { len: chunk.size * 6 },
                       NoIndices(PrimitiveType::TrianglesList),
                       &self.program,
                       &uniforms,
