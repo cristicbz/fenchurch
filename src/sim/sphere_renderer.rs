@@ -38,7 +38,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             lights: Lights::default(),
-            chunk_size: 1024,
+            chunk_size: 2048,
         }
     }
 }
@@ -66,46 +66,44 @@ impl SphereRenderer {
         })
     }
 
-    pub fn render<'a>(&mut self,
-                      window: &Window,
-                      camera: &Camera,
-                      frame: &mut Frame,
-                      sphere_list: Option<SphereList<'a>>)
-                      -> Result<()> {
+    pub fn update<'a>(&mut self, window: &Window, list: SphereList<'a>) -> Result<()> {
+        let SphereList { positions, radii, colours } = list;
 
-        if let Some(SphereList { positions, radii, colours }) = sphere_list {
-            let num_spheres = positions.len();
-            assert_eq!(radii.len(), num_spheres);
-            assert_eq!(colours.len(), num_spheres);
-            assert!(positions.len() <= u32::MAX as usize);
+        let num_spheres = positions.len();
+        assert_eq!(radii.len(), num_spheres);
+        assert_eq!(colours.len(), num_spheres);
+        assert!(positions.len() <= u32::MAX as usize);
 
-            let chunk_size = self.settings.chunk_size;
-            self.chunks.clear();
-            self.chunks.reserve(num_spheres / chunk_size + 1);
-            for ((positions_chunk, radii_chunk), colours_chunk) in positions.chunks(chunk_size)
-                .zip(radii.chunks(chunk_size))
-                .zip(colours.chunks(chunk_size)) {
-                self.chunks.push(Chunk {
-                    positions: try!(Texture1d::with_format(window.facade(),
-                                                           positions_chunk,
-                                                           UncompressedFloatFormat::F32F32F32,
-                                                           MipmapsOption::NoMipmap)
-                        .chain_err(|| "Failed to build positions texture.")),
-                    radii: try!(Texture1d::with_format(window.facade(),
-                                                       radii_chunk,
-                                                       UncompressedFloatFormat::F32,
+        let chunk_size = self.settings.chunk_size;
+        self.chunks.clear();
+        self.chunks.reserve(num_spheres / chunk_size + 1);
+        for ((positions_chunk, radii_chunk), colours_chunk) in positions.chunks(chunk_size)
+            .zip(radii.chunks(chunk_size))
+            .zip(colours.chunks(chunk_size)) {
+            self.chunks.push(Chunk {
+                positions: try!(Texture1d::with_format(window.facade(),
+                                                       positions_chunk,
+                                                       UncompressedFloatFormat::F32F32F32,
                                                        MipmapsOption::NoMipmap)
-                        .chain_err(|| "Failed to build radii texture.")),
-                    colours: try!(Texture1d::with_format(window.facade(),
-                                                         colours_chunk,
-                                                         UncompressedFloatFormat::F32F32F32,
-                                                         MipmapsOption::NoMipmap)
-                        .chain_err(|| "Failed to build colours texture.")),
-                    size: positions_chunk.len(),
-                })
-            }
+                    .chain_err(|| "Failed to build positions texture.")),
+                radii: try!(Texture1d::with_format(window.facade(),
+                                                   radii_chunk,
+                                                   UncompressedFloatFormat::F32,
+                                                   MipmapsOption::NoMipmap)
+                    .chain_err(|| "Failed to build radii texture.")),
+                colours: try!(Texture1d::with_format(window.facade(),
+                                                     colours_chunk,
+                                                     UncompressedFloatFormat::F32F32F32,
+                                                     MipmapsOption::NoMipmap)
+                    .chain_err(|| "Failed to build colours texture.")),
+                size: positions_chunk.len(),
+            })
         }
 
+        Ok(())
+    }
+
+    pub fn render<'a>(&mut self, camera: &Camera, frame: &mut Frame) -> Result<()> {
         let modelview = camera.modelview();
         let projection = camera.projection();
         let transformed_lights = self.settings.lights.transformed(&modelview);

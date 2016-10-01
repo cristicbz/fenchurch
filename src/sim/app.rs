@@ -15,6 +15,7 @@ use super::snapshot::Snapshot;
 use super::sphere_renderer::{SphereRenderer, SphereList};
 
 
+
 pub struct App {
     window: Window,
     input: Input,
@@ -28,8 +29,6 @@ pub struct App {
     simulation: Simulation,
 
     frame_timer: FrameTimerId,
-    cpu_timer: FrameTimerId,
-    render_timer: FrameTimerId,
 
     world_mesh_id: MeshId,
 }
@@ -40,7 +39,6 @@ struct SimData {
     radii: Vec<f32>,
     colours: Vec<Vec3f>,
 }
-
 
 impl App {
     pub fn new() -> Result<Self> {
@@ -64,14 +62,14 @@ impl App {
         camera.set_pitch(0.2919);
 
 
-        let world_mesh = try!(Heightmap::read("/home/ccc/HMquest03.png", 0.25)
+        let world_mesh = try!(Heightmap::read("./HMquest03.png", 0.25)
                 .chain_err(|| "Failed to load height map."))
             .build_mesh(Vec3f::zero(), vec3(40.0, 15.0, 40.0));
         let world_mesh_id = try!(mesh_renderer.add(&window, &world_mesh)
             .chain_err(|| "Could not create world mesh."));
 
         let mut sim_timers = FrameTimers::new();
-        let simulation = Simulation::with_capacity(&mut sim_timers, 16384, &world_mesh);
+        let simulation = Simulation::new(&mut sim_timers, &world_mesh, 40000);
 
         Ok(App {
             window: window,
@@ -82,8 +80,6 @@ impl App {
             controller: Controller::new(ControllerBindings::default()),
 
             frame_timer: timers.new_stopped("frame"),
-            cpu_timer: timers.new_stopped("cpu"),
-            render_timer: timers.new_stopped("render"),
             timers: timers,
             sim_timers: sim_timers,
 
@@ -156,8 +152,6 @@ impl App {
                   ref mut controller,
                   world_mesh_id,
                   frame_timer,
-                  cpu_timer,
-                  render_timer,
                   ref mut sim_timers,
                   .. } = self;
         let quit_gesture = Gesture::AnyOf(vec![Gesture::QuitTrigger,
@@ -182,29 +176,31 @@ impl App {
                 App::simulation_thread(sim_timers, simulation, &sim_data, &simulation_running_flag);
             });
             while running {
+                timers.query(frame_timer).map(|time| {
+                    let sleep_for = 1.0 / 25.0 - time;
+                    if sleep_for > 0.0 {
+                        ::std::thread::sleep(::std::time::Duration::from_millis(
+                                (sleep_for * 1e3) as u64))
+                    }
+                });
+                let delta_time = timers.start(frame_timer).unwrap_or(1.0 / 60.0);
                 let mut frame = window.draw();
                 let frame_result = (|| -> Result<()> {
-                    let delta_time = timers.start(frame_timer).unwrap_or(1.0 / 60.0);
-                    timers.start(cpu_timer);
                     input.update();
 
-                    timers.start(render_timer);
-                    if let Some(r) = sim_data.read(|sim_data| {
-                        sphere_renderer.render(window,
-                                    camera,
-                                    &mut frame,
-                                    Some(SphereList {
-                                        positions: &sim_data.positions,
-                                        radii: &sim_data.radii,
-                                        colours: &sim_data.colours,
-                                    }))
-                            .chain_err(|| "Failed to render spheres.")
-                    }) {
-                        try!(r);
-                    } else {
-                        try!(sphere_renderer.render(window, camera, &mut frame, None)
-                            .chain_err(|| "Failed to render spheres."));
-                    }
+                    try!(sim_data.read(|sim_data| {
+                            sphere_renderer.update(window,
+                                        SphereList {
+                                            positions: &sim_data.positions,
+                                            radii: &sim_data.radii,
+                                            colours: &sim_data.colours,
+                                        })
+                                .chain_err(|| "Failed to update spheres.")
+                        })
+                        .unwrap_or(Ok(())));
+
+                    try!(sphere_renderer.render(camera, &mut frame)
+                        .chain_err(|| "Failed to render spheres."));
 
                     try!(mesh_renderer.render(window,
                                 camera,
@@ -215,14 +211,12 @@ impl App {
                                     transforms: &transforms,
                                 })
                         .chain_err(|| "Failed to render meshes."));
-                    timers.stop(render_timer);
 
                     if input.poll_gesture(&quit_gesture) {
                         running = false;
                         simulation_running_flag.store(false, Ordering::Release);
                     }
                     controller.update(delta_time, input, camera);
-                    timers.stop(cpu_timer);
                     Ok(())
                 })();
                 try!(frame.finish().chain_err(|| "Context lost."));

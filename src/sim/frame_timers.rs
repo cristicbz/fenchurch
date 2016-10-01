@@ -1,4 +1,4 @@
-use idcontain::{IdVec, Id};
+use idcontain::{IdSlab, Id};
 use std::borrow::Cow;
 use std::fmt::Write;
 use std::mem;
@@ -56,7 +56,7 @@ pub struct FrameTimerId(Id<FrameTimer>);
 /// }
 /// ```
 pub struct FrameTimers {
-    timers: IdVec<FrameTimer>,
+    timers: IdSlab<FrameTimer>,
     last_logged: Option<Instant>,
     log_buffer: String,
 }
@@ -65,7 +65,7 @@ impl FrameTimers {
     /// Creates a new `FrameTimers`.
     pub fn new() -> Self {
         FrameTimers {
-            timers: IdVec::with_capacity(16),
+            timers: IdSlab::with_capacity(16),
             last_logged: None,
             log_buffer: String::with_capacity(512),
         }
@@ -133,6 +133,15 @@ impl FrameTimers {
         };
         self.maybe_log();
         time
+    }
+
+    /// Queries a frame timer and returns the elapsed time in seconds.
+    ///
+    /// Querying a stopped timer will return `None`.
+    pub fn query(&self, timer_id: FrameTimerId) -> Option<f32> {
+        self.timers[timer_id.0]
+            .last_start
+            .map(|last_start| duration_to_seconds(last_start.elapsed()))
     }
 
     fn maybe_log(&mut self) {

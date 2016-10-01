@@ -1,4 +1,4 @@
-use idcontain::{IdVec, Id};
+use idcontain::{IdSlab, Id, IdMap};
 use math::{vec3, Vec3f, Vector, Aabb};
 use num::Zero;
 use std::f32::consts;
@@ -14,10 +14,37 @@ type SphereBvh = Bvh<BvhOptions<MinLeaves<Six>, BinnedSahPartition<Four, TotalAa
 type WorldBvh = Bvh<BvhOptions<MinLeaves<Two>, BinnedSahPartition<Sixteen, CentroidAabbLimit>>>;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct EntityId(Id<ComponentIndex>);
+pub struct EntityId(Id<()>);
+
+derive_flat! {
+    #[element(Body, &BodyRef, &mut BodyMut)]
+    #[access(&BodiesRef, &mut BodiesMut)]
+    pub struct Bodies {
+        #[element(colour)]
+        pub colours: Vec<Vec3f>,
+
+        #[element(force)]
+        pub forces: Vec<Vec3f>,
+
+        #[element(mass)]
+        pub masses: Vec<f32>,
+
+        #[element(other_force)]
+        pub other_forces: Vec<Mutex<Vec3f>>,
+
+        #[element(position)]
+        pub positions: Vec<Vec3f>,
+
+        #[element(radius)]
+        pub radii: Vec<f32>,
+
+        #[element(velocity)]
+        pub velocities: Vec<Vec3f>,
+    }
+}
 
 pub struct Simulation {
-    entities: IdVec<ComponentIndex>,
+    ids: IdSlab<()>,
 
     bvh_timer: FrameTimerId,
     forces_timer: FrameTimerId,
@@ -28,16 +55,9 @@ pub struct Simulation {
     world_bvh: WorldBvh,
     world_triangles: Vec<Triangle>,
 
-    timestep: f32,
-    colours: Vec<Vec3f>,
-    forces: Vec<Vec3f>,
-    masses: Vec<f32>,
-    positions: Vec<Vec3f>,
-    radii: Vec<f32>,
-    reverse_lookup: Vec<EntityId>,
-    velocities: Vec<Vec3f>,
+    bodies: IdMap<(), Bodies>,
 
-    other_forces: Vec<Mutex<Vec3f>>,
+    timestep: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -49,12 +69,9 @@ pub struct NewEntity {
     pub colour: Vec3f,
 }
 
-struct ComponentIndex {
-    index: u32,
-}
 
 impl Simulation {
-    pub fn with_capacity(frame_timers: &mut FrameTimers, capacity: u32, world_mesh: &Mesh) -> Self {
+    pub fn new(frame_timers: &mut FrameTimers, world_mesh: &Mesh, capacity: u32) -> Self {
         let capacity = capacity as usize;
 
         let mut world_triangles = Vec::with_capacity(world_mesh.triangles.len());
@@ -75,7 +92,7 @@ impl Simulation {
         }));
 
         Simulation {
-            entities: IdVec::with_capacity(capacity),
+            ids: IdSlab::with_capacity(capacity),
             sphere_bvh: Bvh::new(),
 
             world_bvh: world_bvh,
@@ -87,46 +104,30 @@ impl Simulation {
 
             timestep: 1. / 300.,
 
-            colours: Vec::with_capacity(capacity),
-            forces: Vec::with_capacity(capacity),
-            other_forces: Vec::with_capacity(capacity),
-            masses: Vec::with_capacity(capacity),
-            positions: Vec::with_capacity(capacity),
-            radii: Vec::with_capacity(capacity),
-            reverse_lookup: Vec::with_capacity(capacity),
-            velocities: Vec::with_capacity(capacity),
+            bodies: IdMap::with_capacity(capacity),
         }
     }
 
     pub fn add(&mut self, entity: NewEntity) -> EntityId {
-        let index_index = self.len() as u32;
-        let id = EntityId(self.entities.insert(ComponentIndex { index: index_index }));
-
-        self.colours.push(entity.colour);
-        self.forces.push(Vec3f::zero());
-        self.other_forces.push(Mutex::new(Vec3f::zero()));
-        self.masses.push(entity.mass);
-        self.positions.push(entity.position);
-        self.radii.push(entity.radius);
-        self.reverse_lookup.push(id);
-        self.velocities.push(entity.velocity);
-        id
+        let id = self.ids.insert(());
+        assert!(self.bodies
+            .insert(id,
+                    Body {
+                        position: entity.position,
+                        velocity: entity.velocity,
+                        colour: entity.colour,
+                        radius: entity.radius,
+                        mass: entity.mass,
+                        force: Vec3f::zero(),
+                        other_force: Mutex::new(Vec3f::zero()),
+                    })
+            .is_none());
+        EntityId(id)
     }
 
     pub fn remove(&mut self, id: EntityId) -> bool {
-        if let Some(ComponentIndex { index }) = self.entities.remove(id.0) {
-            let index = index as usize;
-            self.colours.swap_remove(index);
-            self.forces.swap_remove(index);
-            self.other_forces.swap_remove(index);
-            self.masses.swap_remove(index);
-            self.positions.swap_remove(index);
-            self.radii.swap_remove(index);
-            self.reverse_lookup.swap_remove(index);
-            self.velocities.swap_remove(index);
-            if index < self.reverse_lookup.len() {
-                self.entities[self.reverse_lookup[index].0].index = index as u32;
-            }
+        if self.ids.remove(id.0).is_some() {
+            self.bodies.remove(id.0).expect("ids & bodies out of lockstep");
             true
         } else {
             false
@@ -134,15 +135,15 @@ impl Simulation {
     }
 
     pub fn colours(&self) -> &[Vec3f] {
-        &self.colours
+        self.bodies.access().colours
     }
 
     pub fn positions(&self) -> &[Vec3f] {
-        &self.positions
+        self.bodies.access().positions
     }
 
     pub fn radii(&self) -> &[f32] {
-        &self.radii
+        self.bodies.access().radii
     }
 
     pub fn update(&mut self, timers: &mut FrameTimers, _delta_time: f32) {
@@ -150,7 +151,6 @@ impl Simulation {
         timers.start(self.positions_timer);
         self.update_positions();
         timers.stop(self.positions_timer);
-        self.remove_outliers();
         timers.start(self.bvh_timer);
         self.update_bvh();
         timers.stop(self.bvh_timer);
@@ -159,37 +159,37 @@ impl Simulation {
         self.compute_forces();
         timers.stop(self.forces_timer);
         self.velocities_halfstep();
+
+        self.remove_outliers();
     }
 
     pub fn update_bvh(&mut self) {
+        let BodiesRef { positions, radii, .. } = self.bodies.access();
         self.sphere_bvh
-            .rebuild(self.positions
-                .iter()
-                .zip(self.radii.iter())
+            .rebuild(positions.iter()
+                .zip(radii)
                 .map(|(p, &r)| Aabb::of_sphere(p, r)));
     }
 
     pub fn len(&self) -> usize {
-        self.entities.len()
+        self.ids.len()
     }
 
     fn zero_forces(&mut self) {
-        self.forces.clear();
-        self.forces.resize(self.positions.len(), Vec3f::zero());
-        for force in &mut self.other_forces {
+        let BodiesMut { forces, other_forces, .. } = self.bodies.access_mut();
+        for force in forces {
+            *force = Vec3f::zero();
+        }
+        for force in other_forces {
             *force.get_mut() = Vec3f::zero();
         }
     }
 
     fn compute_forces(&mut self) {
-        let Simulation { ref mut forces,
-                         ref mut other_forces,
-                         ref positions,
-                         ref velocities,
-                         ref radii,
-                         ref sphere_bvh,
-                         timestep,
-                         .. } = *self;
+        let Simulation { ref mut bodies, ref sphere_bvh, timestep, .. } = *self;
+        let BodiesMut { forces, other_forces, positions, velocities, radii, .. } =
+            bodies.access_mut();
+
         let len = positions.len();
         assert!(forces.len() == len);
         assert!(velocities.len() == len);
@@ -198,9 +198,9 @@ impl Simulation {
 
         forces.par_iter_mut()
             .enumerate()
-            .zip(positions)
-            .zip(velocities)
-            .zip(radii)
+            .zip(&*positions)
+            .zip(&*velocities)
+            .zip(&*radii)
             .for_each(|((((i_body, force), position), velocity), &radius)| {
                 let speed = velocity.norm();
                 let drag = speed * consts::PI * radius * radius * DRAG_COEFFICIENT;
@@ -239,10 +239,9 @@ impl Simulation {
     }
 
     fn velocities_halfstep(&mut self) {
-        let mut velocities = &mut self.velocities[..];
-        let mut forces = &self.forces[..];
-        let mut masses = &self.masses[..];
-
+        let BodiesMut { mut velocities, forces, masses, .. } = self.bodies.access_mut();
+        let mut forces = &forces[..];
+        let mut masses = &masses[..];
         assert!(velocities.len() == forces.len());
         assert!(velocities.len() == masses.len());
 
@@ -268,12 +267,8 @@ impl Simulation {
     }
 
     fn update_positions(&mut self) {
-        let Simulation { ref mut positions,
-                         ref mut velocities,
-                         ref world_triangles,
-                         ref world_bvh,
-                         timestep,
-                         .. } = *self;
+        let Simulation { ref mut bodies, ref world_triangles, ref world_bvh, timestep, .. } = *self;
+        let BodiesMut { positions, velocities, .. } = bodies.access_mut();
 
         assert!(positions.len() == velocities.len());
         positions.par_iter_mut()
@@ -308,11 +303,11 @@ impl Simulation {
     }
 
     fn remove_outliers(&mut self) {
-        assert_eq!(self.positions.len(), self.reverse_lookup.len());
-        for i_position in (0..self.positions.len()).rev() {
-            if self.positions[i_position][1] < -5.0 {
-                let entity_id = self.reverse_lookup[i_position];
-                self.remove(entity_id);
+        for i_position in (0..self.bodies.len()).rev() {
+            if self.bodies.access().positions[i_position][1] < -5.0 {
+                let id = self.bodies.index_to_id(i_position).expect("id & bodies out of lockstep");
+                self.ids.remove(id);
+                self.bodies.remove(id);
             }
         }
     }

@@ -2,7 +2,7 @@ use gfx::{Window, Camera};
 use glium::index::PrimitiveType;
 use glium::{VertexBuffer, IndexBuffer, Frame, Surface, Program, DrawParameters,
             BackfaceCullingMode, Depth, DepthTest};
-use idcontain::{IdVec, Id};
+use idcontain::{IdSlab, Id};
 use math::{Vec3f, Mat4, Vector};
 use super::errors::{Result, ChainErr};
 use super::lights::Lights;
@@ -79,7 +79,7 @@ impl<'a> Into<MeshRef<'a>> for &'a Mesh {
 pub struct MeshId(Id<MeshBuffers>);
 
 pub struct MeshRenderer {
-    meshes: IdVec<MeshBuffers>,
+    meshes: IdSlab<MeshBuffers>,
     program: Program,
     draw_parameters: DrawParameters<'static>,
     settings: Settings,
@@ -102,7 +102,7 @@ pub struct MeshList<'a> {
 impl MeshRenderer {
     pub fn new(window: &Window, settings: Settings) -> Result<Self> {
         Ok(MeshRenderer {
-            meshes: IdVec::with_capacity(64),
+            meshes: IdSlab::with_capacity(64),
             index_scratch: Vec::with_capacity(1024),
             program: try!(window.program(VERTEX_SHADER, FRAGMENT_SHADER)
                 .chain_err(|| "Failed to build program for MeshRenderer.")),

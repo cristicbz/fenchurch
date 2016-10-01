@@ -6,11 +6,13 @@ extern crate sdl2;
 extern crate glium_sdl2;
 extern crate sdl2_image;
 extern crate time;
-extern crate idcontain;
 extern crate rand;
 extern crate rayon;
 extern crate parking_lot;
 extern crate crossbeam;
+
+#[macro_use]
+extern crate idcontain;
 
 #[macro_use]
 extern crate glium;
