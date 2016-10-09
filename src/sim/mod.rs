@@ -10,6 +10,7 @@ pub mod snapshot;
 mod atomic_mut_indexer;
 mod heightmap;
 mod lights;
+mod pods;
 
 pub use self::app::App;
 pub use self::errors::Error;

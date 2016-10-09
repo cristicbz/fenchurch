@@ -33,3 +33,4 @@ path = "../idcontain"
 
 [profile.release]
 debug = true
+panic = "abort"

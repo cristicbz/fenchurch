@@ -20,17 +20,8 @@ derive_flat! {
     #[element(Body, &BodyRef, &mut BodyMut)]
     #[access(&BodiesRef, &mut BodiesMut)]
     pub struct Bodies {
-        #[element(colour)]
-        pub colours: Vec<Vec3f>,
-
-        #[element(force)]
-        pub forces: Vec<Vec3f>,
-
         #[element(mass)]
         pub masses: Vec<f32>,
-
-        #[element(other_force)]
-        pub other_forces: Vec<Mutex<Vec3f>>,
 
         #[element(position)]
         pub positions: Vec<Vec3f>,
@@ -40,12 +31,29 @@ derive_flat! {
 
         #[element(velocity)]
         pub velocities: Vec<Vec3f>,
+
+        #[element(force)]
+        pub forces: Vec<Vec3f>,
+
+        #[element(other_force)]
+        pub other_forces: Vec<Mutex<Vec3f>>,
+    }
+}
+
+impl Body {
+    pub fn new(position: Vec3f, velocity: Vec3f, radius: f32, mass: f32) -> Self {
+        Body {
+            position: position,
+            velocity: velocity,
+            radius: radius,
+            mass: mass,
+            force: Vec3f::zero(),
+            other_force: Mutex::new(Vec3f::zero()),
+        }
     }
 }
 
 pub struct Simulation {
-    ids: IdSlab<()>,
-
     bvh_timer: FrameTimerId,
     forces_timer: FrameTimerId,
     positions_timer: FrameTimerId,
@@ -55,25 +63,11 @@ pub struct Simulation {
     world_bvh: WorldBvh,
     world_triangles: Vec<Triangle>,
 
-    bodies: IdMap<(), Bodies>,
-
     timestep: f32,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct NewEntity {
-    pub position: Vec3f,
-    pub velocity: Vec3f,
-    pub radius: f32,
-    pub mass: f32,
-    pub colour: Vec3f,
-}
-
-
 impl Simulation {
-    pub fn new(frame_timers: &mut FrameTimers, world_mesh: &Mesh, capacity: u32) -> Self {
-        let capacity = capacity as usize;
-
+    pub fn new(frame_timers: &mut FrameTimers, world_mesh: &Mesh) -> Self {
         let mut world_triangles = Vec::with_capacity(world_mesh.triangles.len());
         let world_bvh = {
             let mut bvh = Bvh::new();
@@ -92,7 +86,6 @@ impl Simulation {
         }));
 
         Simulation {
-            ids: IdSlab::with_capacity(capacity),
             sphere_bvh: Bvh::new(),
 
             world_bvh: world_bvh,
@@ -103,92 +96,50 @@ impl Simulation {
             positions_timer: frame_timers.new_stopped("sim.pos"),
 
             timestep: 1. / 300.,
-
-            bodies: IdMap::with_capacity(capacity),
         }
     }
 
-    pub fn add(&mut self, entity: NewEntity) -> EntityId {
-        let id = self.ids.insert(());
-        assert!(self.bodies
-            .insert(id,
-                    Body {
-                        position: entity.position,
-                        velocity: entity.velocity,
-                        colour: entity.colour,
-                        radius: entity.radius,
-                        mass: entity.mass,
-                        force: Vec3f::zero(),
-                        other_force: Mutex::new(Vec3f::zero()),
-                    })
-            .is_none());
-        EntityId(id)
-    }
-
-    pub fn remove(&mut self, id: EntityId) -> bool {
-        if self.ids.remove(id.0).is_some() {
-            self.bodies.remove(id.0).expect("ids & bodies out of lockstep");
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn colours(&self) -> &[Vec3f] {
-        self.bodies.access().colours
-    }
-
-    pub fn positions(&self) -> &[Vec3f] {
-        self.bodies.access().positions
-    }
-
-    pub fn radii(&self) -> &[f32] {
-        self.bodies.access().radii
-    }
-
-    pub fn update(&mut self, timers: &mut FrameTimers, _delta_time: f32) {
-        self.velocities_halfstep();
+    pub fn update(&mut self, timers: &mut FrameTimers, bodies: &mut BodiesMut) {
+        self.velocities_halfstep(bodies);
         timers.start(self.positions_timer);
-        self.update_positions();
+        self.update_positions(bodies);
         timers.stop(self.positions_timer);
         timers.start(self.bvh_timer);
-        self.update_bvh();
+        self.update_bvh(bodies);
         timers.stop(self.bvh_timer);
         timers.start(self.forces_timer);
-        self.zero_forces();
-        self.compute_forces();
+        self.zero_forces(bodies);
+        self.compute_forces(bodies);
         timers.stop(self.forces_timer);
-        self.velocities_halfstep();
-
-        self.remove_outliers();
+        self.velocities_halfstep(bodies);
     }
 
-    pub fn update_bvh(&mut self) {
-        let BodiesRef { positions, radii, .. } = self.bodies.access();
+    pub fn update_bvh(&mut self, bodies: &mut BodiesMut) {
+        let BodiesMut { ref positions, ref radii, .. } = *bodies;
         self.sphere_bvh
             .rebuild(positions.iter()
-                .zip(radii)
+                .zip(radii.iter())
                 .map(|(p, &r)| Aabb::of_sphere(p, r)));
     }
 
-    pub fn len(&self) -> usize {
-        self.ids.len()
-    }
-
-    fn zero_forces(&mut self) {
-        let BodiesMut { forces, other_forces, .. } = self.bodies.access_mut();
-        for force in forces {
+    fn zero_forces(&self, bodies: &mut BodiesMut) {
+        let BodiesMut { ref mut forces, ref mut other_forces, .. } = *bodies;
+        for force in forces.iter_mut() {
             *force = Vec3f::zero();
         }
-        for force in other_forces {
+        for force in other_forces.iter_mut() {
             *force.get_mut() = Vec3f::zero();
         }
     }
 
-    fn compute_forces(&mut self) {
-        let Simulation { ref mut bodies, ref sphere_bvh, timestep, .. } = *self;
-        let BodiesMut { forces, other_forces, positions, velocities, radii, .. } =
-            bodies.access_mut();
+    fn compute_forces(&self, bodies: &mut BodiesMut) {
+        let Simulation { ref sphere_bvh, timestep, .. } = *self;
+        let BodiesMut { ref mut forces,
+                        ref mut other_forces,
+                        ref positions,
+                        ref velocities,
+                        ref radii,
+                        .. } = *bodies;
 
         let len = positions.len();
         assert!(forces.len() == len);
@@ -198,9 +149,9 @@ impl Simulation {
 
         forces.par_iter_mut()
             .enumerate()
-            .zip(&*positions)
-            .zip(&*velocities)
-            .zip(&*radii)
+            .zip(positions.par_iter())
+            .zip(velocities.par_iter())
+            .zip(radii.par_iter())
             .for_each(|((((i_body, force), position), velocity), &radius)| {
                 let speed = velocity.norm();
                 let drag = speed * consts::PI * radius * radius * DRAG_COEFFICIENT;
@@ -238,8 +189,9 @@ impl Simulation {
         });
     }
 
-    fn velocities_halfstep(&mut self) {
-        let BodiesMut { mut velocities, forces, masses, .. } = self.bodies.access_mut();
+    fn velocities_halfstep(&self, bodies: &mut BodiesMut) {
+        let BodiesMut { ref mut velocities, ref forces, ref masses, .. } = *bodies;
+        let mut velocities = &mut velocities[..];
         let mut forces = &forces[..];
         let mut masses = &masses[..];
         assert!(velocities.len() == forces.len());
@@ -266,13 +218,13 @@ impl Simulation {
         }
     }
 
-    fn update_positions(&mut self) {
-        let Simulation { ref mut bodies, ref world_triangles, ref world_bvh, timestep, .. } = *self;
-        let BodiesMut { positions, velocities, .. } = bodies.access_mut();
+    fn update_positions(&self, bodies: &mut BodiesMut) {
+        let Simulation { ref world_triangles, ref world_bvh, timestep, .. } = *self;
+        let BodiesMut { ref mut positions, ref mut velocities, .. } = *bodies;
 
         assert!(positions.len() == velocities.len());
         positions.par_iter_mut()
-            .zip(velocities)
+            .zip(velocities.par_iter_mut())
             .for_each(|(position, velocity)| {
                 let mut timestep = timestep;
                 for _ in 0..40 {
@@ -300,16 +252,6 @@ impl Simulation {
                     *velocity -= normal * (velocity.dot(&normal) * 1.5);
                 }
             });
-    }
-
-    fn remove_outliers(&mut self) {
-        for i_position in (0..self.bodies.len()).rev() {
-            if self.bodies.access().positions[i_position][1] < -5.0 {
-                let id = self.bodies.index_to_id(i_position).expect("id & bodies out of lockstep");
-                self.ids.remove(id);
-                self.bodies.remove(id);
-            }
-        }
     }
 }
 
