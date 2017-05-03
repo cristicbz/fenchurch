@@ -36,7 +36,7 @@ void main() {
     vec4 point_clip_position = u_projection * vec4(point_camera_position, 1.0);
     float depth = point_clip_position.z / point_clip_position.w;
 
-    /*gl_FragDepth = ((gl_DepthRange.diff * depth) +*/
-    /*                gl_DepthRange.near + gl_DepthRange.far) * 0.5;*/
+    gl_FragDepth = ((gl_DepthRange.diff * depth) +
+                    gl_DepthRange.near + gl_DepthRange.far) * 0.5;
     gl_FragColor = vec4(f_colour * (key + fill + back + u_ambient_colour), 1.0);
 }

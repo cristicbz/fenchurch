@@ -4,7 +4,7 @@ use glium::{VertexBuffer, IndexBuffer, Frame, Surface, Program, DrawParameters,
             BackfaceCullingMode, Depth, DepthTest};
 use idcontain::{IdSlab, Id};
 use math::{Vec3f, Mat4, Vector};
-use super::errors::{Result, ChainErr};
+use super::errors::{Result, ResultExt};
 use super::lights::Lights;
 use std::ops::{Deref, DerefMut};
 

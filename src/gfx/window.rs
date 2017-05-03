@@ -6,7 +6,7 @@ use sdl2_image::{self, INIT_PNG, INIT_JPG, Sdl2ImageContext};
 use sdl2::Sdl;
 use sdl2::video::GLProfile;
 use std::borrow::Cow;
-use super::errors::{Result, ChainErr, SdlError};
+use super::errors::{Result, ResultExt, SdlError};
 use utils::read_utf8_file;
 
 #[cfg(target_os = "linux")]

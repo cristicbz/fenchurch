@@ -5,17 +5,18 @@ version = "0.1.0"
 
 [dependencies]
 crossbeam = "0.2.10"
-env_logger = "0.3.4"
-error-chain = "0.5.0"
-glium = "0.15.0"
+env_logger = "0.4.2"
+error-chain = "0.10.0"
+glium = "0.16.0"
 log = "0.3.6"
 num = "0.1.35"
-parking_lot = "0.3.2"
+parking_lot = "0.4.0"
 rand = "0.3.14"
-rayon = "0.4.2"
-sdl2 = "0.22.0"
-sdl2_image = "0.22.0"
+rayon = "0.7.0"
+sdl2 = "0.25.0"
+sdl2_image = "0.25.0"
 time = "0.1.35"
+idcontain = "0.7.1"
 
 [dependencies.clap]
 default-features = false
@@ -25,9 +26,6 @@ version = "2.11.3"
 [dependencies.glium_sdl2]
 branch = "fenchurch"
 git = "https://github.com/cristicbz/glium-sdl2"
-
-[dependencies.idcontain]
-path = "../idcontain"
 
 [profile]
 

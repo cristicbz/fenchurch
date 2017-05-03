@@ -3,7 +3,7 @@ use sdl2_image::LoadSurface;
 use sdl2::surface::Surface;
 use sdl2::pixels::PixelFormatEnum;
 use std::path::Path;
-use super::errors::{Result, ChainErr};
+use super::errors::{Result, ResultExt};
 use gfx::errors::SdlError;
 use super::mesh_renderer::{Mesh, MeshVertex, Triangle};
 use num::Zero;
